@@ -1,32 +1,61 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from backend.models.schemas import APIResponse
+from backend.graph import graph_queries
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/{user_id}/score", response_model=APIResponse)
-async def get_life_score(user_id: str):
-    # TODO: Calculate and return life score
-    return APIResponse(
-        success=True,
-        data={"user_id": user_id, "total": 0, "spheres": []},
-    )
+async def get_life_score(user_id: str, request: Request):
+    life_score_engine = request.app.state.life_score_engine
+    try:
+        score = await life_score_engine.calculate(user_id)
+        return APIResponse(success=True, data=score.model_dump())
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.get("/{user_id}/graph", response_model=APIResponse)
+async def get_graph(user_id: str, request: Request):
+    graph = request.app.state.neo4j
+    try:
+        query, params = graph_queries.get_user_graph(user_id)
+        rows = await graph.execute_query(query, params)
+
+        # Format for frontend visualization
+        nodes = set()
+        edges = []
+        for row in rows:
+            from_name = row.get("from_name", "")
+            to_name = row.get("to_name", "")
+            from_label = row.get("from_labels", [""])[0]
+            to_label = row.get("to_labels", [""])[0]
+
+            nodes.add((from_label, from_name))
+            nodes.add((to_label, to_name))
+            edges.append({
+                "from": from_name,
+                "to": to_name,
+                "type": row.get("edge_type", ""),
+                "weight": row.get("weight", 0),
+            })
+
+        node_list = [{"label": label, "name": name} for label, name in nodes]
+
+        return APIResponse(success=True, data={
+            "user_id": user_id,
+            "nodes": node_list,
+            "edges": edges,
+        })
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
 
 
 @router.get("/{user_id}/scenarios", response_model=APIResponse)
 async def get_scenarios(user_id: str):
-    # TODO: Generate and return scenarios
+    # Phase 2 — Scenario Agent not implemented yet
     return APIResponse(
         success=True,
-        data={"user_id": user_id, "scenarios": []},
-    )
-
-
-@router.get("/{user_id}/graph", response_model=APIResponse)
-async def get_graph(user_id: str):
-    # TODO: Return user's knowledge graph
-    return APIResponse(
-        success=True,
-        data={"user_id": user_id, "nodes": [], "edges": []},
+        data={"user_id": user_id, "scenarios": [], "message": "Сценарии будут доступны в Фазе 2"},
     )
