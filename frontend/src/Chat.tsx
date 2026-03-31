@@ -1,29 +1,24 @@
 import { useState, useRef, useEffect } from "react";
-import {
-  startOnboarding,
-  sendOnboardingMessage,
-  sendCheckinMessage,
-} from "./api";
+import { startOnboarding, sendOnboardingMessage, sendCheckinMessage } from "./api";
 
-interface Message {
+interface Msg {
   role: "user" | "assistant";
   text: string;
 }
 
 interface ChatProps {
   userId: string;
-  onOnboardingComplete: () => void;
   mode: "onboarding" | "checkin";
+  onComplete: () => void;
 }
 
-export default function Chat({ userId, onOnboardingComplete, mode }: ChatProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export default function Chat({ userId, mode, onComplete }: ChatProps) {
+  const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottom = useRef<HTMLDivElement>(null);
 
-  // Start onboarding automatically
   useEffect(() => {
     if (mode === "onboarding" && messages.length === 0) {
       setLoading(true);
@@ -37,61 +32,41 @@ export default function Chat({ userId, onOnboardingComplete, mode }: ChatProps) 
     }
   }, [mode, userId]);
 
-  // Auto-scroll
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    bottom.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
-  async function handleSend() {
+  async function send() {
     const text = input.trim();
     if (!text || loading) return;
 
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", text }]);
+    setMessages((m) => [...m, { role: "user", text }]);
     setLoading(true);
 
     try {
       if (mode === "onboarding") {
         const res = await sendOnboardingMessage(userId, sessionId, text);
         if (res.success) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", text: res.data.reply },
-          ]);
-          if (res.data.completed) {
-            setTimeout(() => onOnboardingComplete(), 2000);
-          }
+          setMessages((m) => [...m, { role: "assistant", text: res.data.reply }]);
+          if (res.data.completed) setTimeout(onComplete, 2000);
         }
       } else {
         const res = await sendCheckinMessage(userId, text);
         if (res.success) {
-          // Build reply with graph update info
           let reply = res.data.reply;
-          const updates = res.data.graph_updates;
-          if (updates && updates.total > 0) {
-            reply += "\n\n---\n";
-            reply += `Граф обновлён: ${updates.total} изменений`;
-            if (updates.details) {
-              for (const d of updates.details) {
-                reply += `\n• ${d}`;
-              }
-            }
+          const upd = res.data.graph_updates;
+          if (upd?.total > 0) {
+            reply += `\n\n—\nГраф: ${upd.total} изм.`;
+            for (const d of (upd.details || []).slice(0, 3)) reply += `\n· ${d}`;
           }
           const score = res.data.life_score;
-          if (score) {
-            reply += `\n\nLife Score: ${score.total}`;
-          }
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", text: reply },
-          ]);
+          if (score) reply += `\n\nLife Score: ${score.total}`;
+          setMessages((m) => [...m, { role: "assistant", text: reply }]);
         }
       }
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: "Ошибка соединения. Попробуй ещё раз." },
-      ]);
+      setMessages((m) => [...m, { role: "assistant", text: "Ошибка. Попробуй ещё раз." }]);
     }
     setLoading(false);
   }
@@ -99,37 +74,34 @@ export default function Chat({ userId, onOnboardingComplete, mode }: ChatProps) 
   return (
     <div className="chat">
       <div className="chat-header">
-        <h2>{mode === "onboarding" ? "Знакомство с Runa" : "Ежедневный чекин"}</h2>
+        <h2>{mode === "onboarding" ? "Знакомство" : "Чекин"}</h2>
       </div>
 
       <div className="chat-messages">
-        {messages.map((msg, i) => (
-          <div key={i} className={`message ${msg.role}`}>
-            {msg.role === "assistant" && <span className="avatar">R</span>}
-            <p>{msg.text}</p>
+        {messages.map((m, i) => (
+          <div key={i} className={`msg ${m.role}`}>
+            {m.role === "assistant" && <span className="msg-avatar">R</span>}
+            <div className="msg-bubble">{m.text}</div>
           </div>
         ))}
         {loading && (
-          <div className="message assistant">
-            <span className="avatar">R</span>
-            <p className="typing">Runa думает...</p>
+          <div className="msg assistant">
+            <span className="msg-avatar">R</span>
+            <div className="msg-bubble msg-typing">···</div>
           </div>
         )}
-        <div ref={bottomRef} />
+        <div ref={bottom} />
       </div>
 
-      <div className="chat-input">
+      <div className="chat-input-bar">
         <input
-          type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder="Напиши что-нибудь..."
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Напиши..."
           disabled={loading}
         />
-        <button onClick={handleSend} disabled={loading || !input.trim()}>
-          →
-        </button>
+        <button onClick={send} disabled={loading || !input.trim()}>↑</button>
       </div>
     </div>
   );
