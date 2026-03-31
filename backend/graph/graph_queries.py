@@ -232,3 +232,85 @@ def update_edge_weight(
         "to_name": to_name,
         "weight": weight,
     }
+
+
+# ── Weight History (for prediction math) ──────────────────────────
+
+def log_weight_change(
+    user_id: str,
+    from_label: str,
+    from_name: str,
+    to_label: str,
+    to_name: str,
+    edge_type: str,
+    old_weight: float,
+    new_weight: float,
+) -> tuple[str, dict]:
+    """Log every weight change as a WeightLog node. This is the data
+    that prediction math uses to calculate momentum and trends."""
+    query = """
+    CREATE (wl:WeightLog {
+        user_id: $user_id,
+        from_label: $from_label,
+        from_name: $from_name,
+        to_label: $to_label,
+        to_name: $to_name,
+        edge_type: $edge_type,
+        old_weight: $old_weight,
+        new_weight: $new_weight,
+        delta: $delta,
+        created_at: datetime()
+    })
+    RETURN wl
+    """
+    return query, {
+        "user_id": user_id,
+        "from_label": from_label,
+        "from_name": from_name,
+        "to_label": to_label,
+        "to_name": to_name,
+        "edge_type": edge_type,
+        "old_weight": old_weight,
+        "new_weight": new_weight,
+        "delta": new_weight - old_weight,
+    }
+
+
+def get_weight_history(user_id: str, limit: int = 100) -> tuple[str, dict]:
+    """Get all weight changes for prediction math. Ordered by time."""
+    query = """
+    MATCH (wl:WeightLog {user_id: $user_id})
+    RETURN wl.from_label AS from_label, wl.from_name AS from_name,
+           wl.to_label AS to_label, wl.to_name AS to_name,
+           wl.edge_type AS edge_type,
+           wl.old_weight AS old_weight, wl.new_weight AS new_weight,
+           wl.delta AS delta, wl.created_at AS created_at
+    ORDER BY wl.created_at ASC
+    LIMIT $limit
+    """
+    return query, {"user_id": user_id, "limit": limit}
+
+
+def get_edge_weight_history(
+    user_id: str,
+    from_name: str,
+    to_name: str,
+) -> tuple[str, dict]:
+    """Get weight history for a specific edge (for trend calculation)."""
+    query = """
+    MATCH (wl:WeightLog {user_id: $user_id, from_name: $from_name, to_name: $to_name})
+    RETURN wl.old_weight AS old_weight, wl.new_weight AS new_weight,
+           wl.delta AS delta, wl.created_at AS created_at
+    ORDER BY wl.created_at ASC
+    """
+    return query, {"user_id": user_id, "from_name": from_name, "to_name": to_name}
+
+
+def get_sphere_full_data(user_id: str, sphere_name: str) -> tuple[str, dict]:
+    """Get sphere with all connected nodes, their types, weights, and descriptions."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id, name: $sphere_name})<-[r]-(n {user_id: $user_id})
+    RETURN labels(n) AS node_labels, n.name AS node_name, n.description AS description,
+           type(r) AS edge_type, r.weight AS weight
+    """
+    return query, {"user_id": user_id, "sphere_name": sphere_name}

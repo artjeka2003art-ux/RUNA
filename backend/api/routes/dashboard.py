@@ -23,7 +23,6 @@ async def get_graph(user_id: str, request: Request):
         query, params = graph_queries.get_user_graph(user_id)
         rows = await graph.execute_query(query, params)
 
-        # Format for frontend visualization
         nodes = set()
         edges = []
         for row in rows:
@@ -53,9 +52,23 @@ async def get_graph(user_id: str, request: Request):
 
 
 @router.get("/{user_id}/scenarios", response_model=APIResponse)
-async def get_scenarios(user_id: str):
-    # Phase 2 — Scenario Agent not implemented yet
-    return APIResponse(
-        success=True,
-        data={"user_id": user_id, "scenarios": [], "message": "Сценарии будут доступны в Фазе 2"},
-    )
+async def get_scenarios(user_id: str, request: Request):
+    """Generate prediction via graph math + Claude narratives."""
+    scenario_agent = request.app.state.scenario_agent
+
+    try:
+        report = await scenario_agent.generate_scenarios(user_id)
+
+        if report.get("error") == "no_data":
+            return APIResponse(success=True, data={
+                "user_id": user_id,
+                "scenarios": [],
+                "message": "Недостаточно данных для prediction. Пройдите онбординг и сделайте несколько чекинов.",
+            })
+
+        return APIResponse(success=True, data={
+            "user_id": user_id,
+            **report,
+        })
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))

@@ -7,8 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api.routes import onboarding, checkin, dashboard
 from backend.graph.neo4j_client import Neo4jClient
 from backend.graph.graph_builder import GraphBuilder
+from backend.memory.session_store import SessionStore
+from backend.memory.zep_client import ZepMemoryClient
 from backend.agents.conversation_agent import ConversationAgent
 from backend.agents.companion_agent import CompanionAgent
+from backend.agents.analyst_agent import AnalystAgent
+from backend.agents.scenario_agent import ScenarioAgent
 from backend.scoring.life_score_engine import LifeScoreEngine
 
 
@@ -23,33 +27,53 @@ async def lifespan(app: FastAPI):
     )
     graph_builder = GraphBuilder(neo4j)
 
-    # Anthropic — real client if API key exists, mock for development
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if api_key and not api_key.startswith("sk-ant-xxx"):
-        import anthropic
-        anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
-        print("✓ Anthropic: real Claude API")
+    # Redis session store
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    session_store = SessionStore(redis_url)
+    print(f"✓ Redis: sessions at {redis_url}")
+
+    # Zep long-term memory
+    zep_api_key = os.getenv("ZEP_API_KEY", "")
+    zep_client = None
+    if zep_api_key and not zep_api_key.startswith("xxx"):
+        zep_client = ZepMemoryClient(api_key=zep_api_key)
+        print("✓ Zep: long-term memory connected")
     else:
-        from backend.agents.mock_anthropic import MockAnthropic
-        anthropic_client = MockAnthropic()
-        print("⚠ Anthropic: mock mode (set ANTHROPIC_API_KEY for real Claude)")
+        print("⚠ Zep: no API key, running without long-term memory")
+
+    # OpenAI client
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key and not api_key.startswith("sk-xxx"):
+        from openai import AsyncOpenAI
+        ai_client = AsyncOpenAI(api_key=api_key)
+        print("✓ OpenAI: real API connected")
+    else:
+        from backend.agents.mock_openai import MockOpenAI
+        ai_client = MockOpenAI()
+        print("⚠ OpenAI: mock mode (set OPENAI_API_KEY for real API)")
 
     # Scoring
     life_score_engine = LifeScoreEngine(neo4j)
 
-    # Agents
-    conversation_agent = ConversationAgent(anthropic_client, graph_builder)
-    companion_agent = CompanionAgent(anthropic_client, neo4j)
+    # Agents (now with Redis-backed sessions)
+    conversation_agent = ConversationAgent(ai_client, graph_builder, session_store)
+    companion_agent = CompanionAgent(ai_client, neo4j, session_store, zep_client)
+    analyst_agent = AnalystAgent(ai_client, neo4j, graph_builder)
+    scenario_agent = ScenarioAgent(ai_client, neo4j)
 
     # Make available to routes
     app.state.neo4j = neo4j
     app.state.graph_builder = graph_builder
+    app.state.session_store = session_store
     app.state.conversation_agent = conversation_agent
     app.state.companion_agent = companion_agent
+    app.state.analyst_agent = analyst_agent
+    app.state.scenario_agent = scenario_agent
     app.state.life_score_engine = life_score_engine
 
     yield
 
+    await session_store.close()
     await neo4j.close()
 
 

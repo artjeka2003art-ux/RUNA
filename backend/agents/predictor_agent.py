@@ -1,17 +1,12 @@
-from backend.constants import ANTHROPIC_MODEL
+"""Predictor Agent — deprecated.
 
+Probability calculation is now done mathematically inside
+backend/prediction/graph_math.py via PredictionEngine.
 
-class PredictorAgent:
-    """Calculates probabilities for each scenario based on graph data."""
+No LLM calls for prediction. Math only.
 
-    def __init__(self, anthropic_client, graph_client):
-        self.anthropic = anthropic_client
-        self.graph = graph_client
-        self.model = ANTHROPIC_MODEL
-
-    async def predict(self, user_id: str, scenarios: list[dict]) -> list[dict]:
-        # TODO: Calculate probability for each scenario
-        # 1. Load current graph state (weights, patterns, blockers)
-        # 2. Ask Claude to assign probabilities with reasoning
-        # 3. Return scenarios with probabilities attached
-        raise NotImplementedError
+This file is kept as a marker. All prediction logic lives in:
+- backend/prediction/graph_math.py — momentum, projection, probabilities
+- backend/prediction/prediction_engine.py — orchestration
+- backend/agents/scenario_agent.py — math + Claude narratives
+"""

@@ -65,9 +65,25 @@ export default function Chat({ userId, onOnboardingComplete, mode }: ChatProps) 
       } else {
         const res = await sendCheckinMessage(userId, text);
         if (res.success) {
+          // Build reply with graph update info
+          let reply = res.data.reply;
+          const updates = res.data.graph_updates;
+          if (updates && updates.total > 0) {
+            reply += "\n\n---\n";
+            reply += `Граф обновлён: ${updates.total} изменений`;
+            if (updates.details) {
+              for (const d of updates.details) {
+                reply += `\n• ${d}`;
+              }
+            }
+          }
+          const score = res.data.life_score;
+          if (score) {
+            reply += `\n\nLife Score: ${score.total}`;
+          }
           setMessages((prev) => [
             ...prev,
-            { role: "assistant", text: res.data.reply },
+            { role: "assistant", text: reply },
           ]);
         }
       }

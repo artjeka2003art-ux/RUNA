@@ -3,45 +3,45 @@ import re
 import uuid
 from pathlib import Path
 
-from backend.constants import ANTHROPIC_MODEL
+from backend.constants import AI_MODEL
 from backend.graph.graph_builder import GraphBuilder
+from backend.memory.session_store import SessionStore
 
 ONBOARDING_PROMPT = (Path(__file__).parent.parent / "prompts" / "onboarding_prompt.txt").read_text()
-
-# In-memory session storage (Phase 1 — migrate to Redis in Phase 2)
-_sessions: dict[str, dict] = {}
 
 
 class ConversationAgent:
     """Handles onboarding (15-min deep conversation) and daily check-ins."""
 
-    def __init__(self, anthropic_client, graph_builder: GraphBuilder):
-        self.anthropic = anthropic_client
+    def __init__(self, ai_client, graph_builder: GraphBuilder, session_store: SessionStore):
+        self.ai = ai_client
         self.graph = graph_builder
-        self.model = ANTHROPIC_MODEL
+        self.sessions = session_store
+        self.model = AI_MODEL
 
     async def start_onboarding(self, user_id: str) -> dict:
         """Create a new onboarding session and send the first message from Runa."""
         session_id = str(uuid.uuid4())
 
-        # First turn: Claude speaks first with the system prompt
-        response = await self.anthropic.messages.create(
+        response = await self.ai.chat.completions.create(
             model=self.model,
             max_tokens=1024,
-            system=ONBOARDING_PROMPT,
-            messages=[{"role": "user", "content": "Привет"}],
+            messages=[
+                {"role": "system", "content": ONBOARDING_PROMPT},
+                {"role": "user", "content": "Привет"},
+            ],
         )
 
-        assistant_text = response.content[0].text
+        assistant_text = response.choices[0].message.content
 
-        _sessions[session_id] = {
+        await self.sessions.save_onboarding(session_id, {
             "user_id": user_id,
             "messages": [
                 {"role": "user", "content": "Привет"},
                 {"role": "assistant", "content": assistant_text},
             ],
             "completed": False,
-        }
+        })
 
         return {
             "session_id": session_id,
@@ -51,35 +51,39 @@ class ConversationAgent:
 
     async def process_onboarding_message(self, user_id: str, session_id: str, message: str) -> dict:
         """Process next user message during onboarding."""
-        session = _sessions.get(session_id)
+        session = await self.sessions.get_onboarding(session_id)
         if not session or session["user_id"] != user_id:
             raise ValueError("Session not found")
 
         session["messages"].append({"role": "user", "content": message})
 
-        response = await self.anthropic.messages.create(
+        api_messages = [{"role": "system", "content": ONBOARDING_PROMPT}] + session["messages"]
+
+        response = await self.ai.chat.completions.create(
             model=self.model,
             max_tokens=2048,
-            system=ONBOARDING_PROMPT,
-            messages=session["messages"],
+            messages=api_messages,
         )
 
-        assistant_text = response.content[0].text
+        assistant_text = response.choices[0].message.content
         session["messages"].append({"role": "assistant", "content": assistant_text})
 
-        # Check if Claude returned extraction (onboarding complete)
+        # Save updated session to Redis
+        await self.sessions.save_onboarding(session_id, session)
+
+        # Check if model returned extraction (onboarding complete)
         entities = self._extract_entities(assistant_text)
 
         if entities:
             session["completed"] = True
-            # Build the full personal graph
+            await self.sessions.save_onboarding(session_id, session)
+
             counts = await self.graph.build_from_onboarding(
                 user_id=user_id,
-                name=user_id,  # Will be replaced with real name from user data
+                name=user_id,
                 entities=entities,
             )
 
-            # Send a final human-readable message to the user
             spheres = entities.get("spheres", [])
             summary_reply = (
                 f"Я построила твою карту. Вот что я вижу:\n\n"
@@ -105,11 +109,14 @@ class ConversationAgent:
         }
 
     def _extract_entities(self, text: str) -> dict | None:
-        """Parse <extraction> JSON from Claude's response."""
+        """Parse <extraction> JSON from model response."""
         match = re.search(r"<extraction>\s*(.*?)\s*</extraction>", text, re.DOTALL)
         if not match:
-            return None
+            # Fallback for models that don't use tags
+            match = re.search(r"\{.*\"spheres\".*\}", text, re.DOTALL)
+            if not match:
+                return None
         try:
-            return json.loads(match.group(1))
+            return json.loads(match.group(1) if match.lastindex else match.group(0))
         except json.JSONDecodeError:
             return None

@@ -40,3 +40,8 @@ export async function getGraph(userId: string) {
   const res = await fetch(`${BASE}/dashboard/${userId}/graph`);
   return res.json();
 }
+
+export async function getScenarios(userId: string) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/scenarios`);
+  return res.json();
+}

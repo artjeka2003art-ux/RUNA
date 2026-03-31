@@ -22,8 +22,8 @@ AGENT_NAMES = [
     "conversation_agent",
     "analyst_agent",
     "scenario_agent",
-    "predictor_agent",
     "companion_agent",
 ]
 
-ANTHROPIC_MODEL = "claude-sonnet-4-5"
+# OpenAI model — gpt-4o-mini is cheap and fast, good for MVP testing
+AI_MODEL = "gpt-4o-mini"

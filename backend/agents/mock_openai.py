@@ -1,20 +1,24 @@
-"""Mock Anthropic client for development without API key.
+"""Mock OpenAI client for development without API key.
 Returns realistic responses so the full onboarding + checkin cycle can be tested.
-When ANTHROPIC_API_KEY is set — real client is used instead.
+When OPENAI_API_KEY is set — real client is used instead.
 """
 
 
-class MockContent:
+class MockMessage:
     def __init__(self, text: str):
-        self.text = text
+        self.content = text
+        self.role = "assistant"
+
+
+class MockChoice:
+    def __init__(self, text: str):
+        self.message = MockMessage(text)
 
 
 class MockResponse:
     def __init__(self, text: str):
-        self.content = [MockContent(text)]
+        self.choices = [MockChoice(text)]
 
-
-_ONBOARDING_STEP = {}
 
 _ONBOARDING_RESPONSES = [
     "Привет. Расскажи мне — что сейчас происходит в твоей жизни? Не в общих чертах, а конкретно — что занимает голову прямо сейчас?",
@@ -50,29 +54,37 @@ _CHECKIN_RESPONSES = [
 ]
 
 
-class MockMessages:
-    async def create(self, model: str, max_tokens: int, system: str, messages: list[dict]) -> MockResponse:
-        # Determine if this is onboarding or checkin
+class MockCompletions:
+    async def create(self, model: str, max_tokens: int, messages: list[dict]) -> MockResponse:
+        # Find system message to determine context
+        system = ""
+        for m in messages:
+            if m["role"] == "system":
+                system = m["content"]
+                break
+
         is_onboarding = "onboarding" in system.lower() or "extraction" in system.lower()
 
         if is_onboarding:
-            # Track progress per conversation based on message count
             user_messages = [m for m in messages if m["role"] == "user"]
-            step = len(user_messages) - 1  # -1 because first "Привет" is automatic
-
+            step = len(user_messages) - 1
             if step >= len(_ONBOARDING_RESPONSES):
                 step = len(_ONBOARDING_RESPONSES) - 1
-
             return MockResponse(_ONBOARDING_RESPONSES[step])
         else:
-            # Checkin — rotate through responses
-            idx = len(messages) % len(_CHECKIN_RESPONSES)
+            user_messages = [m for m in messages if m["role"] == "user"]
+            idx = len(user_messages) % len(_CHECKIN_RESPONSES)
             text = _CHECKIN_RESPONSES[idx].format(topic="работу")
             return MockResponse(text)
 
 
-class MockAnthropic:
-    """Drop-in replacement for anthropic.AsyncAnthropic when no API key is set."""
+class MockChat:
+    def __init__(self):
+        self.completions = MockCompletions()
+
+
+class MockOpenAI:
+    """Drop-in replacement for openai.AsyncOpenAI when no API key is set."""
 
     def __init__(self):
-        self.messages = MockMessages()
+        self.chat = MockChat()
