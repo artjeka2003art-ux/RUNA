@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Chat from "./Chat";
 import Dashboard from "./Dashboard";
 import PredictionView from "./PredictionView";
@@ -13,31 +13,40 @@ function getUserId(): string {
   return id;
 }
 
-type Tab = "home" | "checkin" | "prediction" | "onboarding";
+type Tab = "today" | "checkin" | "path" | "onboarding";
 
-const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
-  { id: "home", label: "Главная", icon: "⬡" },
-  { id: "checkin", label: "Чекин", icon: "◉" },
-  { id: "prediction", label: "Prediction", icon: "◈" },
+const NAV_ITEMS: { id: Tab; label: string }[] = [
+  { id: "today", label: "Today" },
+  { id: "checkin", label: "Check-in" },
+  { id: "path", label: "Path" },
 ];
 
 function App() {
   const userId = getUserId();
   const [tab, setTab] = useState<Tab>(() =>
-    localStorage.getItem("runa_onboarded") ? "home" : "onboarding"
+    localStorage.getItem("runa_onboarded") ? "today" : "onboarding"
   );
   const [refreshKey, setRefreshKey] = useState(0);
 
   function handleOnboardingComplete() {
     localStorage.setItem("runa_onboarded", "true");
     setRefreshKey((k) => k + 1);
-    setTab("home");
+    setTab("today");
   }
 
   const switchTab = useCallback((t: Tab) => {
-    if (t === "home") setRefreshKey((k) => k + 1);
+    if (t === "today") setRefreshKey((k) => k + 1);
     setTab(t);
   }, []);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail === "checkin") switchTab("checkin");
+    };
+    window.addEventListener("runa-navigate", handler);
+    return () => window.removeEventListener("runa-navigate", handler);
+  }, [switchTab]);
 
   if (tab === "onboarding") {
     return (
@@ -51,16 +60,17 @@ function App() {
     <div className="layout">
       {/* Sidebar */}
       <aside className="sidebar">
-        <div className="sidebar-logo">R</div>
+        <div className="sidebar-brand">
+          <div className="sidebar-logo">Runa</div>
+          <div className="sidebar-tagline">Clarity for today</div>
+        </div>
         <nav className="sidebar-nav">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
               className={`nav-item ${tab === item.id ? "active" : ""}`}
               onClick={() => switchTab(item.id)}
-              title={item.label}
             >
-              <span className="nav-icon">{item.icon}</span>
               <span className="nav-label">{item.label}</span>
             </button>
           ))}
@@ -69,9 +79,9 @@ function App() {
 
       {/* Main content */}
       <main className="main">
-        {tab === "home" && <Dashboard key={refreshKey} userId={userId} />}
+        {tab === "today" && <Dashboard key={refreshKey} userId={userId} />}
         {tab === "checkin" && <Chat userId={userId} mode="checkin" onComplete={() => {}} />}
-        {tab === "prediction" && <PredictionView userId={userId} />}
+        {tab === "path" && <PredictionView userId={userId} />}
       </main>
     </div>
   );

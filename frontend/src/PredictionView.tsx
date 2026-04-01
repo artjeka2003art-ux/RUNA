@@ -12,9 +12,9 @@ interface Scenario {
 }
 
 const TYPE_LABELS: Record<string, string> = {
-  optimistic: "Оптимистичный",
-  realistic: "Реалистичный",
-  pessimistic: "Пессимистичный",
+  realistic: "Текущий курс",
+  optimistic: "Если собраться",
+  pessimistic: "Если ничего не менять",
 };
 
 const TYPE_COLORS: Record<string, string> = {
@@ -22,6 +22,8 @@ const TYPE_COLORS: Record<string, string> = {
   realistic: "#a78bfa",
   pessimistic: "#ef4444",
 };
+
+const TYPE_ORDER = ["realistic", "optimistic", "pessimistic"];
 
 export default function PredictionView({ userId }: { userId: string }) {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -40,7 +42,7 @@ export default function PredictionView({ userId }: { userId: string }) {
           setLeverage(res.data.key_leverage_point?.narrative || res.data.key_leverage_point?.impact || "");
           setWarning(res.data.warning_signal?.narrative || res.data.warning_signal?.trend || "");
         } else {
-          setError(res.data?.message || "Недостаточно данных");
+          setError(res.data?.message || "Недостаточно данных для построения маршрутов");
         }
       } catch {
         setError("Ошибка загрузки");
@@ -52,63 +54,77 @@ export default function PredictionView({ userId }: { userId: string }) {
 
   if (loading) {
     return (
-      <div className="pred-view">
-        <h2>Prediction</h2>
-        <div className="pred-loading">
-          <div className="spinner" />
-          <p>Считаю сценарии...</p>
-          <span className="pred-method">graph_math / 12w projection</span>
+      <div className="path-view">
+        <div className="path-header">
+          <h2>Path</h2>
+          <p className="path-subtitle">Строю маршруты...</p>
         </div>
+        <div className="path-loading"><div className="spinner" /></div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="pred-view">
-        <h2>Prediction</h2>
+      <div className="path-view">
+        <div className="path-header">
+          <h2>Path</h2>
+          <p className="path-subtitle">Три маршрута, по которым сейчас может пойти твоя жизнь</p>
+        </div>
         <p className="empty-state">{error}</p>
       </div>
     );
   }
 
+  const sorted = [...scenarios].sort((a, b) => TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type));
+
   return (
-    <div className="pred-view">
-      <h2>Prediction</h2>
-      <span className="pred-method">graph_math / 12w projection</span>
+    <div className="path-view">
+      <div className="path-header">
+        <h2>Path</h2>
+        <p className="path-subtitle">Три маршрута, по которым сейчас может пойти твоя жизнь</p>
+      </div>
 
-      {scenarios.map((s) => {
-        const c = TYPE_COLORS[s.type] || "#888";
-        return (
-          <div key={s.type} className="sc-card" style={{ borderLeftColor: c }}>
-            <div className="sc-head">
-              <span className="sc-type" style={{ color: c }}>{TYPE_LABELS[s.type] || s.type}</span>
-              <span className="sc-prob" style={{ color: c }}>{s.probability}%</span>
+      <div className="path-scenarios">
+        {sorted.map((s) => {
+          const c = TYPE_COLORS[s.type] || "#888";
+          const isMain = s.type === "realistic";
+          return (
+            <div key={s.type} className={`path-card ${isMain ? "path-card-main" : ""}`} style={{ borderLeftColor: c }}>
+              <div className="path-card-head">
+                <span className="path-card-type" style={{ color: c }}>{TYPE_LABELS[s.type] || s.type}</span>
+                <span className="path-card-prob" style={{ color: c }}>{s.probability}%</span>
+              </div>
+              {s.title && <div className="path-card-title">{s.title}</div>}
+              {s.narrative && <p className="path-card-narrative">{s.narrative}</p>}
+              <div className="path-card-score">
+                <span className="path-score-from">{s.total_score_initial}</span>
+                <span className="path-score-arrow">&#x2192;</span>
+                <span className="path-score-to">{s.total_score_final}</span>
+                <span className="path-score-delta" style={{ color: s.total_delta >= 0 ? "#22c55e" : "#ef4444" }}>
+                  ({s.total_delta >= 0 ? "+" : ""}{s.total_delta})
+                </span>
+              </div>
             </div>
-            {s.title && <div className="sc-title">{s.title}</div>}
-            {s.narrative && <p className="sc-text">{s.narrative}</p>}
-            <div className="sc-score">
-              <span>{s.total_score_initial}</span>
-              <span style={{ color: s.total_delta >= 0 ? "#22c55e" : "#ef4444" }}>
-                {s.total_delta >= 0 ? "+" : ""}{s.total_delta}
-              </span>
-              <span>→ {s.total_score_final}</span>
+          );
+        })}
+      </div>
+
+      {/* Leverage & Warning */}
+      {(leverage || warning) && (
+        <div className="path-insights">
+          {leverage && (
+            <div className="path-insight-card path-insight-leverage">
+              <div className="path-insight-label">Главная точка влияния</div>
+              <p>{leverage}</p>
             </div>
-          </div>
-        );
-      })}
-
-      {leverage && (
-        <div className="insight green">
-          <div className="insight-tag">Ключевой рычаг</div>
-          <p>{leverage}</p>
-        </div>
-      )}
-
-      {warning && (
-        <div className="insight red">
-          <div className="insight-tag">Сигнал тревоги</div>
-          <p>{warning}</p>
+          )}
+          {warning && (
+            <div className="path-insight-card path-insight-warning">
+              <div className="path-insight-label">Ранний сигнал риска</div>
+              <p>{warning}</p>
+            </div>
+          )}
         </div>
       )}
     </div>
