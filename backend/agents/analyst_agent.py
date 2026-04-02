@@ -19,10 +19,20 @@ class AnalystAgent:
         self.graph_builder = graph_builder
         self.model = AI_MODEL
 
-    async def run_after_checkin(self, user_id: str, user_message: str, companion_reply: str) -> dict:
-        """Main entry point: analyze check-in and update the graph."""
+    async def run_after_checkin(
+        self,
+        user_id: str,
+        user_message: str,
+        companion_reply: str,
+        sphere_context: dict | None = None,
+    ) -> dict:
+        """Main entry point: analyze check-in and update the graph.
+
+        sphere_context (optional): {"sphere_id": ..., "sphere_name": ...}
+        When present, analyst prioritises updates related to this sphere.
+        """
         graph_state = await self._build_graph_state(user_id)
-        analysis = await self._call_ai(graph_state, user_message, companion_reply)
+        analysis = await self._call_ai(graph_state, user_message, companion_reply, sphere_context)
 
         if not analysis:
             return {"changes": 0, "details": "no analysis produced"}
@@ -68,13 +78,30 @@ class AnalystAgent:
 
         return "\n".join(lines) if lines else "Graph is empty."
 
-    async def _call_ai(self, graph_state: str, user_message: str, companion_reply: str) -> dict | None:
+    async def _call_ai(
+        self,
+        graph_state: str,
+        user_message: str,
+        companion_reply: str,
+        sphere_context: dict | None = None,
+    ) -> dict | None:
         """Send graph + check-in to AI, parse JSON response."""
         prompt = (ANALYST_PROMPT_TEMPLATE
             .replace("{graph_state}", graph_state)
             .replace("{user_message}", user_message)
             .replace("{companion_reply}", companion_reply)
         )
+
+        # Inject sphere focus when message came from sphere chat
+        if sphere_context:
+            sphere_section = (
+                f"\n\n## SPHERE CONTEXT — this message came from sphere chat\n"
+                f"Sphere: {sphere_context.get('sphere_name', '?')}\n"
+                f"Prioritise weight updates for edges connected to this sphere.\n"
+                f"New nodes discovered should connect to \"{sphere_context.get('sphere_name', '')}\" first.\n"
+                f"But also update other spheres if the evidence warrants it.\n"
+            )
+            prompt += sphere_section
 
         response = await self.ai.chat.completions.create(
             model=self.model,

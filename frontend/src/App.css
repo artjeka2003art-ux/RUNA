@@ -1092,10 +1092,15 @@
 }
 
 .sphere-detail-desc {
-  font-size: 14px;
-  color: #71717a;
-  line-height: 1.6;
+  font-size: 15px;
+  color: #a1a1aa;
+  line-height: 1.7;
   margin-bottom: 12px;
+}
+
+.sphere-detail-desc-empty {
+  color: #3f3f46;
+  font-style: italic;
 }
 
 .sphere-detail-actions {
@@ -1212,6 +1217,85 @@
   border-radius: 8px;
   background: rgba(124,58,237,0.08);
   color: #a78bfa;
+}
+
+/* Sphere Summary Block */
+
+.sphere-summary-block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.sphere-summary-section {
+  padding: 18px 20px;
+  border-radius: 14px;
+  border-left: 3px solid;
+}
+
+.sphere-summary-pressure {
+  background: rgba(239,68,68,0.04);
+  border-left-color: #ef4444;
+}
+
+.sphere-summary-growth {
+  background: rgba(34,197,94,0.04);
+  border-left-color: #22c55e;
+}
+
+.sphere-summary-patterns {
+  background: rgba(167,139,250,0.04);
+  border-left-color: #a78bfa;
+}
+
+.sphere-summary-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 10px;
+}
+
+.sphere-summary-pressure .sphere-summary-label { color: #ef4444; }
+.sphere-summary-growth .sphere-summary-label { color: #22c55e; }
+.sphere-summary-patterns .sphere-summary-label { color: #a78bfa; }
+
+.sphere-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+
+.sphere-summary-item + .sphere-summary-item {
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+
+.sphere-summary-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #d4d4d8;
+}
+
+.sphere-summary-desc {
+  font-size: 12px;
+  color: #71717a;
+  line-height: 1.5;
+}
+
+/* Sphere Empty State */
+
+.sphere-empty-state {
+  text-align: center;
+  padding: 32px 20px;
+  margin-bottom: 20px;
+}
+
+.sphere-empty-state p {
+  font-size: 14px;
+  color: #3f3f46;
+  line-height: 1.7;
 }
 
 /* Sphere Chat */

@@ -150,3 +150,7 @@ class GraphBuilder:
     async def get_related_spheres(self, user_id: str, sphere_id: str) -> list[str]:
         rows = await self._run(*graph_queries.get_related_spheres(user_id, sphere_id))
         return [r["name"] for r in rows]
+
+    async def update_sphere_description(self, sphere_id: str, description: str) -> dict | None:
+        rows = await self._run(*graph_queries.update_sphere_description(sphere_id, description))
+        return rows[0] if rows else None

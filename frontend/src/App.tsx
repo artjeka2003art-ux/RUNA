@@ -37,6 +37,7 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [revealData, setRevealData] = useState<RevealData | null>(null);
   const [selectedSphereId, setSelectedSphereId] = useState<string | null>(null);
+  const [sphereIntro, setSphereIntro] = useState<string | null>(null);
 
   function handleOnboardingComplete(data?: RevealData) {
     localStorage.setItem("runa_onboarded", "true");
@@ -54,13 +55,15 @@ function App() {
     setTab("lifemap");
   }
 
-  function handleOpenSphere(sphereId: string) {
+  function handleOpenSphere(sphereId: string, intro?: string) {
     setSelectedSphereId(sphereId);
+    setSphereIntro(intro || null);
     setTab("sphere-detail");
   }
 
   function handleBackFromSphere() {
     setSelectedSphereId(null);
+    setSphereIntro(null);
     setRefreshKey((k) => k + 1);
     setTab("lifemap");
   }
@@ -127,6 +130,7 @@ function App() {
           <SphereDetail
             userId={userId}
             sphereId={selectedSphereId}
+            intro={sphereIntro}
             onBack={handleBackFromSphere}
           />
         )}

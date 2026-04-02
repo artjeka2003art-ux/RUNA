@@ -98,22 +98,33 @@ async def get_sphere_detail(user_id: str, sphere_id: str, request: Request):
 
 @router.post("", response_model=APIResponse)
 async def create_sphere(payload: SphereCreate, request: Request):
-    """Create a new sphere."""
+    """Create a new sphere and generate AI intro message."""
     graph_builder = request.app.state.graph_builder
+    sphere_agent = request.app.state.sphere_agent
 
     try:
         result = await graph_builder.create_sphere(payload.user_id, payload.name)
         if not result:
             return APIResponse(success=False, error="Failed to create sphere")
 
+        sphere_id = result["id"]
+
+        # Generate AI intro for this new sphere
+        intro = ""
+        try:
+            intro = await sphere_agent.generate_intro(payload.user_id, payload.name)
+        except Exception:
+            pass
+
         return APIResponse(success=True, data={
             "sphere": {
-                "id": result["id"],
+                "id": sphere_id,
                 "name": result["name"],
                 "description": "",
                 "score": None,
                 "archived": False,
-            }
+            },
+            "intro": intro,
         })
     except Exception as e:
         return APIResponse(success=False, error=str(e))
@@ -184,18 +195,30 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
         # 3. Log as checkin
         await graph_builder.add_checkin(payload.user_id, f"[{sphere_name}] {payload.message}")
 
-        # 4. Analyst updates full graph
+        # 4. Analyst updates full graph — with sphere context
         analysis = {"changes": 0}
         try:
             analysis = await analyst.run_after_checkin(
                 user_id=payload.user_id,
                 user_message=payload.message,
                 companion_reply=reply,
+                sphere_context={"sphere_id": sphere_id, "sphere_name": sphere_name},
             )
         except Exception:
             pass
 
-        # 5. Calculate score
+        # 5. Update sphere description if empty or after meaningful exchange
+        sphere_desc = sphere.get("description", "")
+        try:
+            if not sphere_desc or len(sphere_desc) < 5:
+                sphere_desc = await sphere_agent.generate_description(
+                    payload.user_id, sphere_name, payload.message,
+                )
+                await graph_builder.update_sphere_description(sphere_id, sphere_desc)
+        except Exception:
+            pass
+
+        # 6. Calculate score
         life_score = await life_score_engine.calculate(payload.user_id)
         await life_score_engine.commit_score_snapshot(payload.user_id, life_score)
 
@@ -206,7 +229,7 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
             "sphere": {
                 "id": sphere_id,
                 "name": sphere_name,
-                "description": sphere.get("description", ""),
+                "description": sphere_desc,
                 "score": score_map.get(sphere_name),
                 "archived": False,
             },

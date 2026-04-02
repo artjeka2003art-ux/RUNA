@@ -29,13 +29,16 @@ interface Msg {
 interface SphereDetailProps {
   userId: string;
   sphereId: string;
+  intro?: string | null;
   onBack: () => void;
 }
 
-export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailProps) {
+export default function SphereDetail({ userId, sphereId, intro, onBack }: SphereDetailProps) {
   const [sphere, setSphere] = useState<SphereData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessages] = useState<Msg[]>(() =>
+    intro ? [{ role: "assistant" as const, text: intro }] : []
+  );
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -77,10 +80,11 @@ export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailP
             graphUpdates: res.data.graph_updates,
           },
         ]);
-        // Update sphere data with fresh info
         if (res.data.sphere) {
           setSphere((prev) => prev ? { ...prev, ...res.data.sphere } : prev);
         }
+        // Reload full detail to see updated related nodes
+        loadSphere();
       }
     } catch {
       setMessages((m) => [
@@ -125,25 +129,22 @@ export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailP
     return "#ef4444";
   }
 
-  const typeLabels: Record<string, string> = {
-    Blocker: "Блокеры",
-    Goal: "Цели",
-    Pattern: "Паттерны",
-    Value: "Ценности",
-  };
+  const blockers = sphere.related_blockers;
+  const goals = sphere.related_goals;
+  const patterns = sphere.related_patterns;
+  const values = sphere.related_values;
+  const hasRelated = blockers.length + goals.length + patterns.length + values.length > 0;
 
-  const sections: { key: string; label: string; items: RelatedNode[]; accent: string }[] = [
-    { key: "blockers", label: typeLabels.Blocker, items: sphere.related_blockers, accent: "#ef4444" },
-    { key: "goals", label: typeLabels.Goal, items: sphere.related_goals, accent: "#22c55e" },
-    { key: "patterns", label: typeLabels.Pattern, items: sphere.related_patterns, accent: "#a78bfa" },
-    { key: "values", label: typeLabels.Value, items: sphere.related_values, accent: "#f59e0b" },
-  ];
+  // Build "what's happening" summary
+  const pressureItems = blockers.filter((b) => b.weight >= 0.5);
+  const growthItems = [...goals, ...values].filter((g) => g.weight >= 0.4);
 
   return (
     <div className="sphere-detail">
       {/* Header */}
       <div className="sphere-detail-header">
         <button className="sphere-back-btn" onClick={onBack}>&larr; Life Map</button>
+
         <div className="sphere-detail-title-row">
           {renaming ? (
             <div className="sphere-rename-inline">
@@ -168,9 +169,16 @@ export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailP
             </span>
           )}
         </div>
+
         {sphere.description && (
           <p className="sphere-detail-desc">{sphere.description}</p>
         )}
+        {!sphere.description && (
+          <p className="sphere-detail-desc sphere-detail-desc-empty">
+            Начни разговор ниже — Runa опишет смысл этой сферы.
+          </p>
+        )}
+
         <div className="sphere-detail-actions">
           <button
             className="sphere-action-small"
@@ -184,42 +192,77 @@ export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailP
         </div>
       </div>
 
-      {/* Related entities */}
       <div className="sphere-detail-body">
-        <div className="sphere-related-grid">
-          {sections.map((sec) => (
-            sec.items.length > 0 && (
-              <div key={sec.key} className="sphere-related-section">
-                <h4 className="sphere-related-title" style={{ color: sec.accent }}>{sec.label}</h4>
-                {sec.items.map((item, i) => (
-                  <div key={i} className="sphere-related-item">
-                    <span className="sphere-related-name">{item.name}</span>
-                    {item.description && (
-                      <span className="sphere-related-desc">{item.description}</span>
-                    )}
+        {/* Summary block: What's happening now */}
+        {hasRelated && (
+          <div className="sphere-summary-block">
+            {/* What's holding back */}
+            {pressureItems.length > 0 && (
+              <div className="sphere-summary-section sphere-summary-pressure">
+                <h4 className="sphere-summary-label">Что давит</h4>
+                {pressureItems.map((b, i) => (
+                  <div key={i} className="sphere-summary-item">
+                    <span className="sphere-summary-name">{b.name}</span>
+                    {b.description && <span className="sphere-summary-desc">{b.description}</span>}
                   </div>
                 ))}
               </div>
-            )
-          ))}
-        </div>
+            )}
 
+            {/* Where growth is */}
+            {growthItems.length > 0 && (
+              <div className="sphere-summary-section sphere-summary-growth">
+                <h4 className="sphere-summary-label">На что можно опереться</h4>
+                {growthItems.map((g, i) => (
+                  <div key={i} className="sphere-summary-item">
+                    <span className="sphere-summary-name">{g.name}</span>
+                    {g.description && <span className="sphere-summary-desc">{g.description}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Patterns noticed */}
+            {patterns.length > 0 && (
+              <div className="sphere-summary-section sphere-summary-patterns">
+                <h4 className="sphere-summary-label">Замеченные паттерны</h4>
+                {patterns.map((p, i) => (
+                  <div key={i} className="sphere-summary-item">
+                    <span className="sphere-summary-name">{p.name}</span>
+                    {p.description && <span className="sphere-summary-desc">{p.description}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Connected spheres */}
         {sphere.related_spheres.length > 0 && (
           <div className="sphere-connections">
-            <span className="sphere-connections-label">Связанные сферы:</span>
+            <span className="sphere-connections-label">Связана с:</span>
             {sphere.related_spheres.map((name) => (
               <span key={name} className="sphere-connection-chip">{name}</span>
             ))}
           </div>
         )}
 
+        {/* Empty state — no related entities yet */}
+        {!hasRelated && !intro && (
+          <div className="sphere-empty-state">
+            <p>Эта сфера пока пуста. Расскажи о ней в чате ниже — Runa начнёт строить картину.</p>
+          </div>
+        )}
+
         {/* Sphere Chat */}
         <div className="sphere-chat">
-          <h3 className="sphere-chat-title">Разговор о сфере</h3>
+          <h3 className="sphere-chat-title">
+            {messages.length === 0 ? "Начни разговор" : "Разговор"}
+          </h3>
 
           {messages.length === 0 && (
             <p className="sphere-chat-hint">
-              Расскажи, что происходит в этой сфере. AI знает её контекст и обновит всю модель.
+              Расскажи, что для тебя значит эта сфера. Что в ней происходит сейчас? Что хочешь изменить?
             </p>
           )}
 
@@ -231,10 +274,10 @@ export default function SphereDetail({ userId, sphereId, onBack }: SphereDetailP
                   {m.text}
                   {m.graphUpdates && (m.graphUpdates.weights_updated > 0 || m.graphUpdates.nodes_created > 0) && (
                     <div className="sphere-chat-updates">
-                      Граф обновлён:
-                      {m.graphUpdates.weights_updated > 0 && ` ${m.graphUpdates.weights_updated} связей`}
-                      {m.graphUpdates.nodes_created > 0 && ` ${m.graphUpdates.nodes_created} узлов`}
-                      {m.graphUpdates.resolved > 0 && ` ${m.graphUpdates.resolved} снято`}
+                      Модель обновлена
+                      {m.graphUpdates.weights_updated > 0 && ` · ${m.graphUpdates.weights_updated} связей`}
+                      {m.graphUpdates.nodes_created > 0 && ` · ${m.graphUpdates.nodes_created} новых узлов`}
+                      {m.graphUpdates.resolved > 0 && ` · ${m.graphUpdates.resolved} снято`}
                     </div>
                   )}
                 </div>

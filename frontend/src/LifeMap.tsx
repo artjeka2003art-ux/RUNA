@@ -11,7 +11,7 @@ interface SphereVM {
 
 interface LifeMapProps {
   userId: string;
-  onOpenSphere: (sphereId: string) => void;
+  onOpenSphere: (sphereId: string, intro?: string) => void;
 }
 
 export default function LifeMap({ userId, onOpenSphere }: LifeMapProps) {
@@ -42,9 +42,10 @@ export default function LifeMap({ userId, onOpenSphere }: LifeMapProps) {
     setActionLoading(true);
     const res = await createSphere(userId, name);
     if (res.success) {
-      setSpheres((prev) => [...prev, res.data.sphere]);
       setNewName("");
       setAdding(false);
+      // Redirect to new sphere immediately — AI intro will greet the user
+      onOpenSphere(res.data.sphere.id, res.data.intro || "");
     }
     setActionLoading(false);
   }

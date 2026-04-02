@@ -69,6 +69,57 @@ class SphereAgent:
 
         return reply
 
+    async def generate_description(self, user_id: str, sphere_name: str, conversation_snippet: str = "") -> str:
+        """Generate a short human-readable description for a sphere."""
+        global_context = await self._build_global_context(user_id)
+        sphere_context, _ = await self._build_sphere_context(user_id, sphere_name)
+
+        prompt = (
+            f"Пользователь создал сферу жизни: \"{sphere_name}\".\n"
+            f"Контекст его жизни:\n{global_context}\n\n"
+        )
+        if sphere_context and "Пока нет данных" not in sphere_context:
+            prompt += f"Что уже связано с этой сферой:\n{sphere_context}\n\n"
+        if conversation_snippet:
+            prompt += f"Из разговора:\n{conversation_snippet}\n\n"
+        prompt += (
+            "Напиши ОДНО предложение (до 100 символов), описывающее суть этой сферы "
+            "для этого конкретного человека. Без кавычек, без пояснений — только само предложение."
+        )
+
+        response = await self.ai.chat.completions.create(
+            model=self.model,
+            max_tokens=100,
+            messages=[
+                {"role": "system", "content": "Ты — Runa. Пиши на русском. Коротко и по сути."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content.strip().strip('"').strip("«»")
+
+    async def generate_intro(self, user_id: str, sphere_name: str) -> str:
+        """Generate a welcoming first message when user opens a new sphere."""
+        global_context = await self._build_global_context(user_id)
+
+        prompt = (
+            f"Пользователь только что создал новую сферу жизни: \"{sphere_name}\".\n"
+            f"Контекст его жизни:\n{global_context}\n\n"
+            f"Напиши тёплое первое сообщение (2-3 предложения) от Runa.\n"
+            f"Цель: помочь человеку раскрыть, что для него значит эта сфера.\n"
+            f"Задай один конкретный вопрос, чтобы начать разговор.\n"
+            f"Пиши на русском. Не начинай с 'Привет'."
+        )
+
+        response = await self.ai.chat.completions.create(
+            model=self.model,
+            max_tokens=200,
+            messages=[
+                {"role": "system", "content": "Ты — Runa, персональная AI-система."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content.strip()
+
     async def _build_sphere_context(self, user_id: str, sphere_name: str) -> tuple[str, str]:
         """Get all nodes connected to this sphere."""
         query, params = graph_queries.get_sphere_full_data(user_id, sphere_name)

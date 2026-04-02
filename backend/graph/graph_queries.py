@@ -411,3 +411,13 @@ def create_sphere_with_id(user_id: str, sphere_name: str, description: str = "")
     RETURN elementId(s) AS id, s.name AS name
     """
     return query, {"user_id": user_id, "sphere_name": sphere_name, "description": description}
+
+
+def update_sphere_description(sphere_id: str, description: str) -> tuple[str, dict]:
+    query = """
+    MATCH (s:Sphere)
+    WHERE elementId(s) = $sphere_id
+    SET s.description = $description, s.updated_at = datetime()
+    RETURN elementId(s) AS id, s.name AS name, s.description AS description
+    """
+    return query, {"sphere_id": sphere_id, "description": description}
