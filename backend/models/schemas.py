@@ -50,11 +50,21 @@ class SphereScore(BaseModel):
     reason: str = ""
 
 
+class NextStep(BaseModel):
+    action: str = ""
+    why: str = ""
+    outcome: str = ""
+
+
 class LifeScore(BaseModel):
     user_id: str
     total: float = Field(ge=0, le=100)
     spheres: list[SphereScore] = Field(default_factory=list)
     calculated_at: datetime = Field(default_factory=datetime.utcnow)
+    daily_state: str = ""
+    daily_state_reason: str = ""
+    score_delta: float = 0.0
+    next_step: NextStep = Field(default_factory=NextStep)
 
 
 class APIResponse(BaseModel):

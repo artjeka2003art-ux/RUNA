@@ -58,15 +58,21 @@ Write in Russian. Be specific, reference the sphere names and node names from th
 {{
   "optimistic": {{
     "title": "short title in Russian",
-    "narrative": "3-4 sentences describing this future based on the math. Reference specific spheres and their projected scores."
+    "narrative": "3-4 sentences describing this future based on the math. Reference specific spheres and their projected scores.",
+    "first_step": "One specific action to move toward this scenario. Reference concrete sphere or node names.",
+    "risk": "What could prevent this scenario. Be specific to the data."
   }},
   "realistic": {{
     "title": "...",
-    "narrative": "..."
+    "narrative": "...",
+    "first_step": "One action to stay on this course or improve it.",
+    "risk": "Main risk on the current trajectory."
   }},
   "pessimistic": {{
     "title": "...",
-    "narrative": "..."
+    "narrative": "...",
+    "first_step": "One action to avoid this outcome.",
+    "risk": "What inaction costs, based on the data."
   }},
   "leverage_point_narrative": "1-2 sentences explaining the key leverage point in human terms",
   "warning_narrative": "1-2 sentences explaining the warning signal in human terms"
@@ -127,10 +133,36 @@ Write in Russian. Be specific, reference the sphere names and node names from th
     def _merge_results(self, prediction: dict, narratives: dict) -> dict:
         """Merge math results with AI narratives into final output."""
         scenarios = []
+        leverage = prediction.get("leverage_point", {})
+        warning = prediction.get("warning_signal", {})
+        weeks = prediction.get("weeks_projected", 12)
 
         for mode in ("optimistic", "realistic", "pessimistic"):
             math = prediction["scenarios"].get(mode, {})
             narr = narratives.get(mode, {})
+            delta = math.get("total_delta", 0)
+
+            # AI-generated first_step/risk preferred; fallback uses math context
+            first_step = narr.get("first_step", "")
+            risk = narr.get("risk", "")
+
+            if not first_step:
+                if mode == "optimistic" and leverage.get("node"):
+                    first_step = f'Начни с "{leverage["node"]}" в сфере "{leverage.get("sphere", "")}".'
+                elif mode == "pessimistic" and warning.get("node"):
+                    first_step = f'Обрати внимание на "{warning["node"]}" — {warning.get("trend", "")}.'
+                elif mode == "realistic":
+                    first_step = "Продолжай текущий курс, следи за слабыми сферами."
+
+            if not risk:
+                if mode == "pessimistic":
+                    risk = f"Life Score снизится на {abs(delta)} за {weeks} недель."
+                elif mode == "optimistic":
+                    risk = "Без регулярных действий этот сценарий отдаляется."
+                elif mode == "realistic" and delta < 0:
+                    risk = f"Текущий курс ведёт к снижению на {abs(delta)}."
+
+            horizon_label = f"{weeks} недель" if weeks else ""
 
             scenarios.append({
                 "type": mode,
@@ -141,6 +173,9 @@ Write in Russian. Be specific, reference the sphere names and node names from th
                 "total_score_final": math.get("total_score_final", 50),
                 "total_delta": math.get("total_delta", 0),
                 "sphere_projections": math.get("sphere_projections", []),
+                "first_step": first_step,
+                "risk": risk,
+                "horizon_label": horizon_label,
             })
 
         return {

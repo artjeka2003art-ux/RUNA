@@ -51,6 +51,31 @@ async def get_graph(user_id: str, request: Request):
         return APIResponse(success=False, error=str(e))
 
 
+@router.get("/{user_id}/score-history", response_model=APIResponse)
+async def get_score_history(user_id: str, request: Request):
+    """Return last N Life Score snapshots for trend display."""
+    graph = request.app.state.neo4j
+    try:
+        query = """
+        MATCH (sh:ScoreHistory {user_id: $uid})
+        RETURN sh.total AS total, sh.created_at AS created_at
+        ORDER BY sh.created_at DESC
+        LIMIT 14
+        """
+        rows = await graph.execute_query(query, {"uid": user_id})
+        # Return in chronological order
+        history = [
+            {"total": round(r["total"], 1), "created_at": str(r["created_at"])}
+            for r in reversed(rows)
+        ]
+        return APIResponse(success=True, data={
+            "user_id": user_id,
+            "history": history,
+        })
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
 @router.get("/{user_id}/scenarios", response_model=APIResponse)
 async def get_scenarios(user_id: str, request: Request):
     """Generate prediction via graph math + Claude narratives."""

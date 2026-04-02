@@ -41,6 +41,11 @@ export async function getGraph(userId: string) {
   return res.json();
 }
 
+export async function getScoreHistory(userId: string) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/score-history`);
+  return res.json();
+}
+
 export async function getScenarios(userId: string) {
   const res = await fetch(`${BASE}/dashboard/${userId}/scenarios`);
   return res.json();

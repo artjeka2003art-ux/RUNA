@@ -1,34 +1,9 @@
 import { useState, useEffect } from "react";
 import { getScenarios } from "./api";
-
-interface Scenario {
-  type: string;
-  title: string;
-  narrative: string;
-  probability: number;
-  total_score_initial: number;
-  total_score_final: number;
-  total_delta: number;
-}
-
-const TYPE_LABELS: Record<string, string> = {
-  realistic: "Текущий курс",
-  optimistic: "Если собраться",
-  pessimistic: "Если ничего не менять",
-};
-
-const TYPE_COLORS: Record<string, string> = {
-  optimistic: "#22c55e",
-  realistic: "#a78bfa",
-  pessimistic: "#ef4444",
-};
-
-const TYPE_ORDER = ["realistic", "optimistic", "pessimistic"];
+import { buildPathVM, type PathVM } from "./mappers/scenarios";
 
 export default function PredictionView({ userId }: { userId: string }) {
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
-  const [leverage, setLeverage] = useState("");
-  const [warning, setWarning] = useState("");
+  const [vm, setVm] = useState<PathVM | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -38,14 +13,12 @@ export default function PredictionView({ userId }: { userId: string }) {
       try {
         const res = await getScenarios(userId);
         if (res.success && res.data.scenarios?.length) {
-          setScenarios(res.data.scenarios);
-          setLeverage(res.data.key_leverage_point?.narrative || res.data.key_leverage_point?.impact || "");
-          setWarning(res.data.warning_signal?.narrative || res.data.warning_signal?.trend || "");
+          setVm(buildPathVM(res.data));
         } else {
-          setError(res.data?.message || "Недостаточно данных для построения маршрутов");
+          setError("Для построения маршрутов нужно больше данных. Сделай несколько чекинов — и система покажет, куда ведёт твой текущий курс.");
         }
       } catch {
-        setError("Ошибка загрузки");
+        setError("Не удалось загрузить маршруты. Попробуй позже.");
       }
       setLoading(false);
     }
@@ -56,73 +29,76 @@ export default function PredictionView({ userId }: { userId: string }) {
     return (
       <div className="path-view">
         <div className="path-header">
-          <h2>Path</h2>
-          <p className="path-subtitle">Строю маршруты...</p>
+          <h2>Твой путь</h2>
+          <p className="path-subtitle">Строю маршруты на основе твоей модели...</p>
         </div>
         <div className="path-loading"><div className="spinner" /></div>
       </div>
     );
   }
 
-  if (error) {
+  if (error || !vm) {
     return (
       <div className="path-view">
-        <div className="path-header">
-          <h2>Path</h2>
-          <p className="path-subtitle">Три маршрута, по которым сейчас может пойти твоя жизнь</p>
-        </div>
+        <div className="path-header"><h2>Твой путь</h2></div>
         <p className="empty-state">{error}</p>
       </div>
     );
   }
 
-  const sorted = [...scenarios].sort((a, b) => TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type));
-
   return (
     <div className="path-view">
       <div className="path-header">
-        <h2>Path</h2>
-        <p className="path-subtitle">Три маршрута, по которым сейчас может пойти твоя жизнь</p>
+        <h2>Твой путь</h2>
+        <p className="path-subtitle">Три направления, в которых может двигаться твоя жизнь прямо сейчас</p>
       </div>
 
       <div className="path-scenarios">
-        {sorted.map((s) => {
-          const c = TYPE_COLORS[s.type] || "#888";
-          const isMain = s.type === "realistic";
-          return (
-            <div key={s.type} className={`path-card ${isMain ? "path-card-main" : ""}`} style={{ borderLeftColor: c }}>
-              <div className="path-card-head">
-                <span className="path-card-type" style={{ color: c }}>{TYPE_LABELS[s.type] || s.type}</span>
-                <span className="path-card-prob" style={{ color: c }}>{s.probability}%</span>
+        {vm.scenarios.map((s) => (
+          <div key={s.type} className={`path-card ${s.isMain ? "path-card-main" : ""}`} style={{ borderLeftColor: s.accent }}>
+            <div className="path-card-head">
+              <div>
+                <span className="path-card-type" style={{ color: s.accent }}>{s.label}</span>
+                <div className="path-card-question">{s.question}</div>
               </div>
-              {s.title && <div className="path-card-title">{s.title}</div>}
-              {s.narrative && <p className="path-card-narrative">{s.narrative}</p>}
+              <span className="path-card-prob" style={{ color: s.accent }}>{s.probability}%</span>
+            </div>
+            {s.title && <div className="path-card-title">{s.title}</div>}
+            {s.narrative && <p className="path-card-narrative">{s.narrative}</p>}
+
+            <div className="path-card-meta">
+              {s.horizonLabel && (
+                <div className="path-card-horizon">
+                  <span className="path-meta-label">Горизонт:</span> {s.horizonLabel}
+                </div>
+              )}
               <div className="path-card-score">
-                <span className="path-score-from">{s.total_score_initial}</span>
+                <span className="path-score-from">{s.scoreFrom}</span>
                 <span className="path-score-arrow">&#x2192;</span>
-                <span className="path-score-to">{s.total_score_final}</span>
-                <span className="path-score-delta" style={{ color: s.total_delta >= 0 ? "#22c55e" : "#ef4444" }}>
-                  ({s.total_delta >= 0 ? "+" : ""}{s.total_delta})
+                <span className="path-score-to">{s.scoreTo}</span>
+                <span className="path-score-delta" style={{ color: s.scoreDelta >= 0 ? "#22c55e" : "#ef4444" }}>
+                  ({s.scoreDelta >= 0 ? "+" : ""}{s.scoreDelta})
                 </span>
               </div>
+              {s.risk && <div className="path-card-risk"><span className="path-meta-label">Риск:</span> {s.risk}</div>}
+              {s.firstStep && <div className="path-card-step"><span className="path-meta-label">Первый шаг:</span> {s.firstStep}</div>}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
 
-      {/* Leverage & Warning */}
-      {(leverage || warning) && (
+      {(vm.leverage || vm.warning) && (
         <div className="path-insights">
-          {leverage && (
+          {vm.leverage && (
             <div className="path-insight-card path-insight-leverage">
               <div className="path-insight-label">Главная точка влияния</div>
-              <p>{leverage}</p>
+              <p>{vm.leverage}</p>
             </div>
           )}
-          {warning && (
+          {vm.warning && (
             <div className="path-insight-card path-insight-warning">
-              <div className="path-insight-label">Ранний сигнал риска</div>
-              <p>{warning}</p>
+              <div className="path-insight-label">На что обратить внимание</div>
+              <p>{vm.warning}</p>
             </div>
           )}
         </div>

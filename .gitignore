@@ -28,6 +28,7 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+__MACOSX/
 
 # Docker
 docker-compose.override.yml

@@ -1,48 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { startOnboarding, sendOnboardingMessage, sendCheckinMessage } from "./api";
+import { buildCheckinSummary, type CheckinSummaryVM } from "./mappers/checkin";
 
 interface Msg {
   role: "user" | "assistant";
   text: string;
-  summary?: CheckinSummary;
-}
-
-interface CheckinSummary {
-  improved: string[];
-  declined: string[];
-  scoreDelta: number | null;
-  newScore: number | null;
+  summary?: CheckinSummaryVM;
 }
 
 interface ChatProps {
   userId: string;
   mode: "onboarding" | "checkin";
   onComplete: () => void;
-}
-
-function parseCheckinSummary(data: any): CheckinSummary | undefined {
-  const upd = data.graph_updates;
-  const score = data.life_score;
-  if (!upd && !score) return undefined;
-
-  const improved: string[] = [];
-  const declined: string[] = [];
-
-  if (upd?.details) {
-    for (const d of upd.details) {
-      const text = String(d);
-      if (/добав|созда|нов|goal|value|support/i.test(text)) improved.push(text);
-      else if (/blocker|блок|снижен|упал/i.test(text)) declined.push(text);
-      else improved.push(text);
-    }
-  }
-
-  return {
-    improved: improved.slice(0, 3),
-    declined: declined.slice(0, 2),
-    scoreDelta: score?.delta ?? null,
-    newScore: score?.total ?? null,
-  };
 }
 
 export default function Chat({ userId, mode, onComplete }: ChatProps) {
@@ -87,12 +56,12 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
       } else {
         const res = await sendCheckinMessage(userId, text);
         if (res.success) {
-          const summary = parseCheckinSummary(res.data);
+          const summary = buildCheckinSummary(res.data);
           setMessages((m) => [...m, { role: "assistant", text: res.data.reply, summary }]);
         }
       }
     } catch {
-      setMessages((m) => [...m, { role: "assistant", text: "Ошибка. Попробуй ещё раз." }]);
+      setMessages((m) => [...m, { role: "assistant", text: "Что-то пошло не так. Попробуй ещё раз." }]);
     }
     setLoading(false);
   }
@@ -103,12 +72,12 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
         {mode === "onboarding" ? (
           <>
             <h2>Знакомство</h2>
-            <p className="chat-subtitle">Расскажи о себе — система начнёт строить твою модель</p>
+            <p className="chat-subtitle">Расскажи, что происходит в твоей жизни. Система начнёт строить твою модель.</p>
           </>
         ) : (
           <>
             <h2>Check-in</h2>
-            <p className="chat-subtitle">Ежедневная точка ясности. Что сегодня на поверхности?</p>
+            <p className="chat-subtitle">Что сегодня на поверхности? Говори как есть — система обновит твою картину.</p>
           </>
         )}
       </div>
@@ -121,26 +90,42 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
               {m.text}
               {m.summary && (
                 <div className="checkin-summary">
-                  {m.summary.improved.length > 0 && (
-                    <div className="summary-section summary-up">
-                      <span className="summary-label">Обновлено</span>
-                      {m.summary.improved.map((t, j) => <span key={j} className="summary-item">{t}</span>)}
-                    </div>
-                  )}
-                  {m.summary.declined.length > 0 && (
-                    <div className="summary-section summary-down">
-                      <span className="summary-label">Требует внимания</span>
-                      {m.summary.declined.map((t, j) => <span key={j} className="summary-item">{t}</span>)}
-                    </div>
-                  )}
+                  <div className="summary-header">
+                    Картина обновлена
+                    {(m.summary.weightsUpdated > 0 || m.summary.nodesCreated > 0 || m.summary.resolved > 0) && (
+                      <span className="summary-counts">
+                        {[
+                          m.summary.weightsUpdated > 0 && `${m.summary.weightsUpdated} связей`,
+                          m.summary.nodesCreated > 0 && `${m.summary.nodesCreated} узлов`,
+                          m.summary.resolved > 0 && `${m.summary.resolved} снято`,
+                        ].filter(Boolean).join(" / ")}
+                      </span>
+                    )}
+                  </div>
+
                   {m.summary.newScore != null && (
-                    <div className="summary-score">
-                      Life Score: <strong>{m.summary.newScore}</strong>
+                    <div className="summary-score-block">
+                      <span className="summary-score-value">{m.summary.newScore}</span>
+                      <span className="summary-score-label">Life Score</span>
                       {m.summary.scoreDelta != null && m.summary.scoreDelta !== 0 && (
-                        <span style={{ color: m.summary.scoreDelta > 0 ? "#22c55e" : "#ef4444", marginLeft: 8 }}>
+                        <span className="summary-score-delta" style={{ color: m.summary.scoreDelta > 0 ? "#22c55e" : "#ef4444" }}>
                           {m.summary.scoreDelta > 0 ? "+" : ""}{m.summary.scoreDelta}
                         </span>
                       )}
+                    </div>
+                  )}
+
+                  {m.summary.updates.length > 0 && (
+                    <div className="summary-section summary-up">
+                      <span className="summary-label">Зафиксировано</span>
+                      {m.summary.updates.map((t, j) => <span key={j} className="summary-item">{t}</span>)}
+                    </div>
+                  )}
+
+                  {m.summary.concerns.length > 0 && (
+                    <div className="summary-section summary-down">
+                      <span className="summary-label">Система обратила внимание</span>
+                      {m.summary.concerns.map((t, j) => <span key={j} className="summary-item">{t}</span>)}
                     </div>
                   )}
                 </div>
@@ -162,7 +147,7 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder={mode === "checkin" ? "Как ты сегодня?" : "Напиши..."}
+          placeholder={mode === "checkin" ? "Что сегодня происходит?" : "Расскажи..."}
           disabled={loading}
         />
         <button onClick={send} disabled={loading || !input.trim()}>&#x2191;</button>

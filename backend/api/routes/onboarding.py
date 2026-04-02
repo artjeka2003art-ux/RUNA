@@ -28,6 +28,16 @@ async def send_message(payload: OnboardingMessage, request: Request):
             session_id=payload.session_id,
             message=payload.message,
         )
+
+        # Commit first score snapshot when onboarding completes
+        if result.get("completed"):
+            try:
+                life_score_engine = request.app.state.life_score_engine
+                score = await life_score_engine.calculate(payload.user_id)
+                await life_score_engine.commit_score_snapshot(payload.user_id, score)
+            except Exception:
+                pass  # Non-blocking — onboarding result is more important
+
         return APIResponse(success=True, data=result)
     except ValueError as e:
         return APIResponse(success=False, error=str(e))

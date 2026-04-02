@@ -1,191 +1,167 @@
 import { useState, useEffect } from "react";
-import { getLifeScore, getGraph, getScenarios } from "./api";
+import { getLifeScore, getGraph, getScenarios, getScoreHistory } from "./api";
+import { buildTodayVM, type TodayVM } from "./mappers/dashboard";
 
-interface SphereScore { sphere: string; score: number; delta: number; reason: string; }
-interface GraphNode { label: string; name: string; }
-
-function scoreColor(s: number): string {
-  if (s >= 65) return "#22c55e";
-  if (s >= 45) return "#a78bfa";
-  if (s >= 30) return "#f59e0b";
-  return "#ef4444";
-}
-
-function scoreInterpretation(s: number): string {
-  if (s >= 75) return "У тебя сейчас сильная фаза. Система видит устойчивые опоры в нескольких сферах. Важно не терять фокус.";
-  if (s >= 60) return "Ты в фазе восстановления. Часть опор уже собирается, но ещё есть внутренний шум. Одно верное действие в день — достаточно.";
-  if (s >= 45) return "Сейчас не точка силы, но и не хаос. Главное — не пытаться починить всю жизнь за один день.";
-  if (s >= 30) return "Система видит давление в нескольких сферах. Но даже в этом состоянии есть одно направление, где можно начать.";
-  return "Сейчас тяжело. Но ты здесь — значит, ты не сдался. Давай найдём один маленький шаг, который ты можешь сделать сегодня.";
-}
+const R = 85;
 
 export default function Dashboard({ userId }: { userId: string }) {
-  const [total, setTotal] = useState(0);
-  const [spheres, setSpheres] = useState<SphereScore[]>([]);
-  const [blockers, setBlockers] = useState<GraphNode[]>([]);
-  const [goals, setGoals] = useState<GraphNode[]>([]);
-  const [values, setValues] = useState<GraphNode[]>([]);
-  const [prediction, setPrediction] = useState<any>(null);
+  const [vm, setVm] = useState<TodayVM | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const [scoreRes, graphRes] = await Promise.all([
+      const [scoreRes, graphRes, historyRes] = await Promise.all([
         getLifeScore(userId),
         getGraph(userId),
+        getScoreHistory(userId).catch(() => ({ success: false, data: null })),
       ]);
-      if (scoreRes.success) {
-        setTotal(scoreRes.data.total);
-        setSpheres(scoreRes.data.spheres || []);
-      }
-      if (graphRes.success) {
-        const n = (graphRes.data.nodes || []).filter((x: GraphNode) => x.label !== "CheckIn" && x.label !== "Person");
-        setBlockers(n.filter((x: GraphNode) => x.label === "Blocker"));
-        setGoals(n.filter((x: GraphNode) => x.label === "Goal"));
-        setValues(n.filter((x: GraphNode) => x.label === "Value"));
-      }
-      getScenarios(userId).then((r) => {
-        if (r.success && r.data.scenarios?.length) setPrediction(r.data);
-      }).catch(() => {});
+      let scenarioData = null;
+      try {
+        const scenRes = await getScenarios(userId);
+        if (scenRes.success) scenarioData = scenRes.data;
+      } catch {}
+
+      const scoreData = scoreRes.success ? scoreRes.data : null;
+      const graphData = graphRes.success ? graphRes.data : null;
+      const historyData = historyRes.success ? historyRes.data : null;
+
+      setVm(buildTodayVM(scoreData, graphData, scenarioData, historyData));
       setLoading(false);
     }
     load();
   }, [userId]);
 
-  if (loading) {
+  if (loading || !vm) {
     return <div className="today"><div className="today-loading"><div className="spinner" /></div></div>;
   }
 
-  const color = scoreColor(total);
-  const R = 85;
-  const C = 2 * Math.PI * R;
-  const offset = C - (total / 100) * C;
-
-  const today = new Date().toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
-
-  // Top 3 spheres by importance (lowest score = most attention needed)
-  const topSpheres = [...spheres].sort((a, b) => a.score - b.score).slice(0, 3);
-
-  // Weakest sphere for next step
-  const weakest = spheres.length > 0 ? [...spheres].sort((a, b) => a.score - b.score)[0] : null;
-
-  // Scenario previews
-  const optimistic = prediction?.scenarios?.find((s: any) => s.type === "optimistic");
-  const pessimistic = prediction?.scenarios?.find((s: any) => s.type === "pessimistic");
+  // SVG sparkline for score history
+  const historyPoints = vm.scoreHistory;
+  const hasHistory = historyPoints.length >= 2;
 
   return (
     <div className="today">
-      <div className="today-date">{today}</div>
+      <div className="today-date">{vm.date}</div>
 
-      {/* Hero Block */}
+      {/* Hero */}
       <div className="today-hero">
         <div className="hero-score-ring">
           <svg className="score-ring-svg" viewBox="0 0 200 200">
             <circle className="score-ring-bg" cx="100" cy="100" r={R} />
-            <circle className="score-ring-fill" cx="100" cy="100" r={R} stroke={color} strokeDasharray={C} strokeDashoffset={offset} />
+            <circle className="score-ring-fill" cx="100" cy="100" r={R} stroke={vm.color} strokeDasharray={vm.ringCircumference} strokeDashoffset={vm.ringOffset} />
           </svg>
           <div className="score-ring-center">
-            <span className="score-ring-number" style={{ color }}>{Math.round(total)}</span>
+            <span className="score-ring-number" style={{ color: vm.color }}>{vm.total}</span>
             <span className="score-ring-label">Life Score</span>
           </div>
         </div>
         <div className="hero-text">
-          <p className="hero-interpretation">{scoreInterpretation(total)}</p>
+          <div className="hero-state-row">
+            <span className={`hero-day-state ${vm.dayState.className}`}>{vm.dayState.label}</span>
+            {vm.scoreDelta != null && (
+              <span className="hero-score-delta" style={{ color: vm.scoreDelta > 0 ? "#22c55e" : "#ef4444" }}>
+                {vm.scoreDelta > 0 ? "+" : ""}{vm.scoreDelta} с прошлого раза
+              </span>
+            )}
+          </div>
+          <p className="hero-interpretation">{vm.interpretation}</p>
         </div>
       </div>
 
-      {/* Key Spheres */}
-      {topSpheres.length > 0 && (
-        <div className="today-section">
-          <h3 className="section-title">Ключевые сферы</h3>
-          <div className="spheres-grid">
-            {topSpheres.map((s) => {
-              const c = scoreColor(s.score);
-              const deltaStr = s.delta > 0 ? `+${s.delta}` : s.delta < 0 ? `${s.delta}` : "—";
-              return (
-                <div key={s.sphere} className="sphere-card">
-                  <div className="sphere-card-header">
-                    <span className="sphere-card-name">{s.sphere}</span>
-                    <span className="sphere-card-score" style={{ color: c }}>{Math.round(s.score)}</span>
-                  </div>
-                  <div className="sphere-card-bar">
-                    <div className="sphere-card-bar-fill" style={{ width: `${s.score}%`, background: c }} />
-                  </div>
-                  <div className="sphere-card-footer">
-                    <span className="sphere-card-delta" style={{ color: s.delta > 0 ? "#22c55e" : s.delta < 0 ? "#ef4444" : "#666" }}>{deltaStr}</span>
-                    {s.reason && <span className="sphere-card-reason">{s.reason}</span>}
-                  </div>
-                </div>
-              );
-            })}
+      {/* Score History Trend */}
+      {hasHistory && <ScoreSparkline points={historyPoints} color={vm.color} />}
+
+      {/* Next Step */}
+      {vm.nextStep && (
+        <div className="next-step-card">
+          <h3 className="next-step-heading">Что сделать сегодня</h3>
+          <p className="next-step-action">{vm.nextStep.action}</p>
+          <div className="next-step-details">
+            <div className="next-step-detail">
+              <span className="next-step-detail-label">Почему именно это</span>
+              <span className="next-step-detail-text">{vm.nextStep.why}</span>
+            </div>
+            <div className="next-step-detail">
+              <span className="next-step-detail-label">Что изменится</span>
+              <span className="next-step-detail-text">{vm.nextStep.outcome}</span>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Two columns: Blockers + Supports */}
+      {/* Key Spheres */}
+      {vm.topSpheres.length > 0 && (
+        <div className="today-section">
+          <h3 className="section-title">Сферы, которые требуют внимания</h3>
+          <div className="spheres-grid">
+            {vm.topSpheres.map((s) => (
+              <div key={s.name} className="sphere-card">
+                <div className="sphere-card-header">
+                  <span className="sphere-card-name">{s.name}</span>
+                  <span className="sphere-card-score" style={{ color: s.color }}>{s.score}</span>
+                </div>
+                <div className="sphere-card-bar">
+                  <div className="sphere-card-bar-fill" style={{ width: `${s.score}%`, background: s.color }} />
+                </div>
+                <div className="sphere-card-footer">
+                  <span className="sphere-card-delta" style={{ color: s.deltaColor }}>{s.deltaStr}</span>
+                  {s.reason && <span className="sphere-card-reason">{s.reason}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Blockers + Supports */}
       <div className="today-two-col">
-        {/* What's pulling you down */}
         <div className="today-card today-card-danger">
-          <h3 className="section-title">Что сейчас тянет вниз</h3>
-          {blockers.length > 0 ? (
+          <h3 className="section-title">Что тормозит</h3>
+          {vm.blockers.length > 0 ? (
             <ul className="insight-list">
-              {blockers.slice(0, 2).map((b) => (
-                <li key={b.name} className="insight-list-item danger">{b.name}</li>
-              ))}
+              {vm.blockers.map((b) => <li key={b} className="insight-list-item danger">{b}</li>)}
             </ul>
           ) : (
-            <p className="empty-hint">Пока не выявлено. Делай чекины — система найдёт.</p>
+            <p className="empty-hint">Система ещё собирает данные. После нескольких чекинов картина станет яснее.</p>
           )}
         </div>
-
-        {/* What gives you ground */}
         <div className="today-card today-card-support">
-          <h3 className="section-title">Что даёт опору</h3>
-          {(goals.length > 0 || values.length > 0) ? (
+          <h3 className="section-title">На что опереться</h3>
+          {vm.supports.length > 0 ? (
             <ul className="insight-list">
-              {[...goals, ...values].slice(0, 2).map((g) => (
-                <li key={g.name} className="insight-list-item support">{g.name}</li>
-              ))}
+              {vm.supports.map((g) => <li key={g} className="insight-list-item support">{g}</li>)}
             </ul>
           ) : (
-            <p className="empty-hint">Появится после нескольких чекинов.</p>
+            <p className="empty-hint">Появится после нескольких разговоров с системой.</p>
           )}
         </div>
       </div>
 
-      {/* Next Step */}
-      {weakest && (
-        <div className="today-card today-card-action">
-          <h3 className="section-title">Следующий шаг на сегодня</h3>
-          <p className="next-step-text">
-            Сфера <strong>{weakest.sphere}</strong> сейчас на {Math.round(weakest.score)} — это самая уязвимая точка.
-            {weakest.reason && <> {weakest.reason}</>}
-          </p>
-          <p className="next-step-why">Одно маленькое действие в этой сфере даст наибольший сдвиг.</p>
-        </div>
-      )}
-
       {/* Future Preview */}
-      {(optimistic || pessimistic) && (
+      {(vm.pessimisticPreview || vm.optimisticPreview) && (
         <div className="today-section">
-          <h3 className="section-title">Что дальше</h3>
+          <h3 className="section-title">Куда ведёт текущий курс</h3>
           <div className="future-preview">
-            {pessimistic && (
+            {vm.pessimisticPreview && (
               <div className="future-card future-stay">
-                <div className="future-label">Если оставить всё как есть</div>
-                <p className="future-text">{pessimistic.narrative || pessimistic.title}</p>
-                {pessimistic.score_delta != null && (
-                  <span className="future-delta" style={{ color: "#ef4444" }}>Life Score: {pessimistic.score_delta > 0 ? "+" : ""}{pessimistic.score_delta}</span>
+                <div className="future-label">Цена бездействия</div>
+                <p className="future-text">{vm.pessimisticPreview.text}</p>
+                {vm.pessimisticPreview.delta != null && (
+                  <span className="future-delta" style={{ color: "#ef4444" }}>
+                    Life Score: {vm.pessimisticPreview.delta > 0 ? "+" : ""}{vm.pessimisticPreview.delta}
+                  </span>
                 )}
               </div>
             )}
-            {optimistic && (
+            {vm.optimisticPreview && (
               <div className="future-card future-grow">
-                <div className="future-label">Если сделать один честный шаг</div>
-                <p className="future-text">{optimistic.narrative || optimistic.title}</p>
-                {optimistic.score_delta != null && (
-                  <span className="future-delta" style={{ color: "#22c55e" }}>Life Score: {optimistic.score_delta > 0 ? "+" : ""}{optimistic.score_delta}</span>
+                <div className="future-label">Если начать сегодня</div>
+                <p className="future-text">{vm.optimisticPreview.text}</p>
+                {vm.optimisticPreview.delta != null && (
+                  <span className="future-delta" style={{ color: "#22c55e" }}>
+                    Life Score: {vm.optimisticPreview.delta > 0 ? "+" : ""}{vm.optimisticPreview.delta}
+                  </span>
                 )}
               </div>
             )}
@@ -195,14 +171,45 @@ export default function Dashboard({ userId }: { userId: string }) {
 
       {/* CTA */}
       <div className="today-cta">
-        <p className="cta-hint">Обновить свою картину</p>
         <button className="cta-button" onClick={() => {
-          // Navigate to check-in via dispatching a custom event
           window.dispatchEvent(new CustomEvent("runa-navigate", { detail: "checkin" }));
         }}>
-          Сделать check-in
+          Обновить картину — сделать check-in
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Minimal SVG sparkline — no external libraries. */
+function ScoreSparkline({ points, color }: { points: { total: number; label: string }[]; color: string }) {
+  const W = 320;
+  const H = 60;
+  const PAD = 8;
+
+  const values = points.map((p) => p.total);
+  const min = Math.min(...values) - 5;
+  const max = Math.max(...values) + 5;
+  const range = max - min || 1;
+
+  const coords = values.map((v, i) => ({
+    x: PAD + (i / (values.length - 1)) * (W - PAD * 2),
+    y: PAD + (1 - (v - min) / range) * (H - PAD * 2),
+  }));
+
+  const polyline = coords.map((c) => `${c.x},${c.y}`).join(" ");
+  const last = coords[coords.length - 1];
+
+  return (
+    <div className="score-history">
+      <h3 className="section-title">Динамика Life Score</h3>
+      <svg viewBox={`0 0 ${W} ${H}`} className="sparkline-svg">
+        <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.7" />
+        {coords.map((c, i) => (
+          <circle key={i} cx={c.x} cy={c.y} r={i === coords.length - 1 ? 4 : 2.5} fill={color} opacity={i === coords.length - 1 ? 1 : 0.5} />
+        ))}
+        <text x={last.x} y={last.y - 8} textAnchor="middle" fill={color} fontSize="10" fontWeight="700">{values[values.length - 1]}</text>
+      </svg>
     </div>
   );
 }
