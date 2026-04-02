@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.routes import onboarding, checkin, dashboard
+from backend.api.routes import onboarding, checkin, dashboard, spheres
 from backend.graph.neo4j_client import Neo4jClient
 from backend.graph.graph_builder import GraphBuilder
 from backend.memory.session_store import SessionStore
@@ -13,6 +13,7 @@ from backend.agents.conversation_agent import ConversationAgent
 from backend.agents.companion_agent import CompanionAgent
 from backend.agents.analyst_agent import AnalystAgent
 from backend.agents.scenario_agent import ScenarioAgent
+from backend.agents.sphere_agent import SphereAgent
 from backend.scoring.life_score_engine import LifeScoreEngine
 
 
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
     companion_agent = CompanionAgent(ai_client, neo4j, session_store, zep_client)
     analyst_agent = AnalystAgent(ai_client, neo4j, graph_builder)
     scenario_agent = ScenarioAgent(ai_client, neo4j)
+    sphere_agent = SphereAgent(ai_client, neo4j, session_store)
 
     # Make available to routes
     app.state.neo4j = neo4j
@@ -69,6 +71,7 @@ async def lifespan(app: FastAPI):
     app.state.companion_agent = companion_agent
     app.state.analyst_agent = analyst_agent
     app.state.scenario_agent = scenario_agent
+    app.state.sphere_agent = sphere_agent
     app.state.life_score_engine = life_score_engine
 
     yield
@@ -90,6 +93,7 @@ app.add_middleware(
 app.include_router(onboarding.router, prefix="/api")
 app.include_router(checkin.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(spheres.router, prefix="/api")
 
 
 @app.get("/health")

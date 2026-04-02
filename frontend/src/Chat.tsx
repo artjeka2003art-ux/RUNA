@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { startOnboarding, sendOnboardingMessage, sendCheckinMessage } from "./api";
 import { buildCheckinSummary, type CheckinSummaryVM } from "./mappers/checkin";
+import type { RevealData } from "./App";
 
 interface Msg {
   role: "user" | "assistant";
@@ -11,7 +12,7 @@ interface Msg {
 interface ChatProps {
   userId: string;
   mode: "onboarding" | "checkin";
-  onComplete: () => void;
+  onComplete: (data?: RevealData) => void;
 }
 
 export default function Chat({ userId, mode, onComplete }: ChatProps) {
@@ -51,7 +52,15 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
         const res = await sendOnboardingMessage(userId, sessionId, text);
         if (res.success) {
           setMessages((m) => [...m, { role: "assistant", text: res.data.reply }]);
-          if (res.data.completed) setTimeout(onComplete, 2000);
+          if (res.data.completed) {
+            const reveal: RevealData | undefined = res.data.spheres
+              ? {
+                  spheres: res.data.spheres,
+                  lifeScore: res.data.life_score ?? 0,
+                }
+              : undefined;
+            setTimeout(() => onComplete(reveal), 2000);
+          }
         }
       } else {
         const res = await sendCheckinMessage(userId, text);

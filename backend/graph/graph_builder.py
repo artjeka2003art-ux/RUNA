@@ -120,3 +120,33 @@ class GraphBuilder:
             counts["goals"] += 1
 
         return counts
+
+    # ── Sphere CRUD (Phase A) ──────────────────────────────────────
+
+    async def create_sphere(self, user_id: str, name: str, description: str = "") -> dict:
+        """Create a new sphere and connect to Person."""
+        rows = await self._run(*graph_queries.create_sphere_with_id(user_id, name, description))
+        if rows:
+            return {"id": rows[0]["id"], "name": rows[0]["name"]}
+        return {}
+
+    async def get_spheres(self, user_id: str) -> list[dict]:
+        return await self._run(*graph_queries.get_spheres_with_ids(user_id))
+
+    async def get_sphere_detail(self, user_id: str, sphere_id: str) -> dict | None:
+        rows = await self._run(*graph_queries.get_sphere_detail(user_id, sphere_id))
+        if not rows:
+            return None
+        return rows[0]
+
+    async def rename_sphere(self, sphere_id: str, new_name: str) -> dict | None:
+        rows = await self._run(*graph_queries.rename_sphere(sphere_id, new_name))
+        return rows[0] if rows else None
+
+    async def archive_sphere(self, sphere_id: str) -> bool:
+        rows = await self._run(*graph_queries.archive_sphere(sphere_id))
+        return bool(rows)
+
+    async def get_related_spheres(self, user_id: str, sphere_id: str) -> list[str]:
+        rows = await self._run(*graph_queries.get_related_spheres(user_id, sphere_id))
+        return [r["name"] for r in rows]

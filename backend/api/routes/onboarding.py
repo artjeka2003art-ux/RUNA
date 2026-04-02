@@ -29,12 +29,27 @@ async def send_message(payload: OnboardingMessage, request: Request):
             message=payload.message,
         )
 
-        # Commit first score snapshot when onboarding completes
+        # Commit first score snapshot + return spheres for reveal
         if result.get("completed"):
             try:
                 life_score_engine = request.app.state.life_score_engine
                 score = await life_score_engine.calculate(payload.user_id)
                 await life_score_engine.commit_score_snapshot(payload.user_id, score)
+
+                # Add spheres data for reveal screen
+                graph_builder = request.app.state.graph_builder
+                sphere_rows = await graph_builder.get_spheres(payload.user_id)
+                score_map = {s.sphere: s.score for s in score.spheres}
+                result["spheres"] = [
+                    {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "description": r.get("description", ""),
+                        "score": score_map.get(r["name"]),
+                    }
+                    for r in sphere_rows
+                ]
+                result["life_score"] = score.total
             except Exception:
                 pass  # Non-blocking — onboarding result is more important
 

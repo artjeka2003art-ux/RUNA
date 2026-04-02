@@ -67,6 +67,59 @@ class LifeScore(BaseModel):
     next_step: NextStep = Field(default_factory=NextStep)
 
 
+class SphereItem(BaseModel):
+    """Sphere in a list view."""
+    id: str
+    name: str
+    description: str = ""
+    score: float | None = None
+    archived: bool = False
+
+
+class SphereRelatedNode(BaseModel):
+    """A node related to a sphere (blocker, goal, pattern, value)."""
+    type: str
+    name: str
+    description: str = ""
+    weight: float = 0.5
+
+
+class SphereDetail(BaseModel):
+    """Full sphere view with related entities."""
+    id: str
+    name: str
+    description: str = ""
+    score: float | None = None
+    related_blockers: list[SphereRelatedNode] = Field(default_factory=list)
+    related_goals: list[SphereRelatedNode] = Field(default_factory=list)
+    related_patterns: list[SphereRelatedNode] = Field(default_factory=list)
+    related_values: list[SphereRelatedNode] = Field(default_factory=list)
+    related_spheres: list[str] = Field(default_factory=list)
+
+
+class SphereCreate(BaseModel):
+    user_id: str
+    name: str
+
+
+class SphereRename(BaseModel):
+    user_id: str
+    name: str
+
+
+class SphereMessageRequest(BaseModel):
+    user_id: str
+    message: str
+
+
+class SphereMessageResponse(BaseModel):
+    reply: str
+    sphere: SphereItem
+    graph_updates: dict = Field(default_factory=dict)
+    life_score: float | None = None
+    score_delta: float | None = None
+
+
 class APIResponse(BaseModel):
     success: bool
     data: dict | None = None

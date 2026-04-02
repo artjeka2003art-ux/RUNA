@@ -50,3 +50,49 @@ export async function getScenarios(userId: string) {
   const res = await fetch(`${BASE}/dashboard/${userId}/scenarios`);
   return res.json();
 }
+
+// ── Spheres (Phase A) ──
+
+export async function getSpheres(userId: string) {
+  const res = await fetch(`${BASE}/spheres/${userId}`);
+  return res.json();
+}
+
+export async function getSphereDetail(userId: string, sphereId: string) {
+  const res = await fetch(`${BASE}/spheres/${userId}/${sphereId}`);
+  return res.json();
+}
+
+export async function createSphere(userId: string, name: string) {
+  const res = await fetch(`${BASE}/spheres`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, name }),
+  });
+  return res.json();
+}
+
+export async function renameSphere(userId: string, sphereId: string, name: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, name }),
+  });
+  return res.json();
+}
+
+export async function deleteSphere(userId: string, sphereId: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}?user_id=${userId}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
+export async function sendSphereMessage(userId: string, sphereId: string, message: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, message }),
+  });
+  return res.json();
+}

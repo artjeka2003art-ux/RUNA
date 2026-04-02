@@ -728,6 +728,532 @@
 .legend-chip { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #52525b; font-weight: 500; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 
+/* ── Reveal Screen ───────────────────────── */
+
+.reveal {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #09090b;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+
+.reveal-visible { opacity: 1; }
+
+.reveal-content {
+  text-align: center;
+  max-width: 600px;
+  padding: 40px;
+}
+
+.reveal-title {
+  font-size: 28px;
+  font-weight: 800;
+  color: #e4e4e7;
+  letter-spacing: -0.5px;
+  margin-bottom: 12px;
+}
+
+.reveal-subtitle {
+  font-size: 15px;
+  color: #71717a;
+  line-height: 1.7;
+  margin-bottom: 48px;
+}
+
+.reveal-constellation {
+  position: relative;
+  width: 360px;
+  height: 360px;
+  margin: 0 auto 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reveal-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.reveal-center-score {
+  font-size: 36px;
+  font-weight: 900;
+  color: #a78bfa;
+  letter-spacing: -2px;
+}
+
+.reveal-center-label {
+  font-size: 10px;
+  color: #52525b;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.reveal-sphere {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transform-origin: center;
+  transition: opacity 0.6s ease, filter 0.6s ease;
+  filter: blur(8px);
+}
+
+.reveal-sphere-visible {
+  opacity: 1;
+  filter: blur(0);
+}
+
+.reveal-sphere-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #a78bfa);
+}
+
+.reveal-sphere-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d4d4d8;
+  white-space: nowrap;
+}
+
+.reveal-sphere-score {
+  font-size: 11px;
+  color: #71717a;
+}
+
+.reveal-cta {
+  padding: 16px 48px;
+  border-radius: 14px;
+  border: none;
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.6s ease, transform 0.15s;
+}
+
+.reveal-cta:hover { transform: translateY(-1px); }
+
+/* ── Life Map ────────────────────────────── */
+
+.lifemap {
+  padding: 36px 40px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.lifemap-header { margin-bottom: 8px; }
+
+.lifemap-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: #e4e4e7;
+  letter-spacing: -0.3px;
+  margin-bottom: 6px;
+}
+
+.lifemap-subtitle {
+  font-size: 14px;
+  color: #52525b;
+  margin-bottom: 8px;
+}
+
+.lifemap-constellation {
+  position: relative;
+  width: 100%;
+  height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lifemap-center-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #52525b;
+  z-index: 1;
+}
+
+.lifemap-sphere {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.lifemap-sphere-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 20px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  color: #d4d4d8;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 80px;
+}
+
+.lifemap-sphere-btn:hover {
+  background: rgba(124,58,237,0.08);
+  border-color: rgba(124,58,237,0.3);
+  transform: scale(1.05);
+}
+
+.lifemap-sphere-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lifemap-sphere-score {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.lifemap-sphere-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.lifemap-sphere:hover .lifemap-sphere-actions { opacity: 1; }
+
+.lifemap-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(255,255,255,0.06);
+  color: #71717a;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lifemap-action-btn:hover { background: rgba(255,255,255,0.1); color: #d4d4d8; }
+.lifemap-action-delete:hover { background: rgba(239,68,68,0.15); color: #ef4444; }
+
+.lifemap-rename-popup {
+  position: absolute;
+  top: 100%;
+  margin-top: 8px;
+  display: flex;
+  gap: 4px;
+  background: #18181b;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 8px;
+  z-index: 10;
+}
+
+.lifemap-rename-popup input {
+  width: 140px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05);
+  color: #e4e4e7;
+  font-size: 13px;
+  outline: none;
+}
+
+.lifemap-rename-popup button {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #a1a1aa;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.lifemap-add-area {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.lifemap-add-btn {
+  padding: 12px 32px;
+  border-radius: 12px;
+  border: 1px dashed rgba(255,255,255,0.15);
+  background: none;
+  color: #71717a;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.lifemap-add-btn:hover {
+  color: #a78bfa;
+  border-color: rgba(124,58,237,0.4);
+}
+
+.lifemap-add-form {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+}
+
+.lifemap-add-form input {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.03);
+  color: #e4e4e7;
+  font-size: 14px;
+  outline: none;
+  width: 220px;
+}
+
+.lifemap-add-form input:focus { border-color: #7c3aed; }
+
+.lifemap-add-form button {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: none;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.lifemap-add-form button:last-child {
+  background: rgba(255,255,255,0.06);
+  color: #71717a;
+}
+
+/* ── Sphere Detail ───────────────────────── */
+
+.sphere-detail {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.sphere-detail-header {
+  padding: 24px 32px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.sphere-back-btn {
+  border: none;
+  background: none;
+  color: #71717a;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 12px;
+}
+
+.sphere-back-btn:hover { color: #a78bfa; }
+
+.sphere-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.sphere-detail-name {
+  font-size: 24px;
+  font-weight: 700;
+  color: #e4e4e7;
+  letter-spacing: -0.3px;
+}
+
+.sphere-detail-score {
+  font-size: 32px;
+  font-weight: 900;
+  letter-spacing: -2px;
+}
+
+.sphere-detail-desc {
+  font-size: 14px;
+  color: #71717a;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.sphere-detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sphere-action-small {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: none;
+  color: #71717a;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sphere-action-small:hover { color: #a1a1aa; border-color: rgba(255,255,255,0.15); }
+.sphere-action-danger:hover { color: #ef4444; border-color: rgba(239,68,68,0.3); }
+
+.sphere-rename-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sphere-rename-inline input {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(124,58,237,0.3);
+  background: rgba(255,255,255,0.03);
+  color: #e4e4e7;
+  font-size: 18px;
+  font-weight: 600;
+  outline: none;
+  width: 220px;
+}
+
+.sphere-rename-inline button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #a1a1aa;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sphere-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+}
+
+.sphere-related-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.sphere-related-section {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.sphere-related-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 10px;
+}
+
+.sphere-related-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.sphere-related-item:last-child { border-bottom: none; }
+
+.sphere-related-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #d4d4d8;
+}
+
+.sphere-related-desc {
+  font-size: 12px;
+  color: #52525b;
+}
+
+.sphere-connections {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.sphere-connections-label {
+  font-size: 12px;
+  color: #52525b;
+}
+
+.sphere-connection-chip {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: rgba(124,58,237,0.08);
+  color: #a78bfa;
+}
+
+/* Sphere Chat */
+
+.sphere-chat {
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding-top: 20px;
+}
+
+.sphere-chat-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #52525b;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 12px;
+}
+
+.sphere-chat-hint {
+  font-size: 13px;
+  color: #3f3f46;
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.sphere-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.sphere-chat-updates {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px;
+  color: #a78bfa;
+}
+
 /* ── Utility ─────────────────────────────── */
 
 .empty-state { text-align: center; color: #3f3f46; font-size: 14px; padding: 60px 20px; line-height: 1.6; }

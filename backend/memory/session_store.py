@@ -44,3 +44,17 @@ class SessionStore:
         if raw:
             return json.loads(raw)
         return []
+
+    # ── Generic session (sphere chats, etc.) ──
+
+    async def save_session(self, session_key: str, messages: list[dict]) -> None:
+        key = f"runa:session:{session_key}"
+        trimmed = messages[-20:] if len(messages) > 20 else messages
+        await self.redis.set(key, json.dumps(trimmed, ensure_ascii=False))
+
+    async def get_session(self, session_key: str) -> list[dict]:
+        key = f"runa:session:{session_key}"
+        raw = await self.redis.get(key)
+        if raw:
+            return json.loads(raw)
+        return []

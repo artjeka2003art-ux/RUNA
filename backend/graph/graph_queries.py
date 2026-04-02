@@ -314,3 +314,100 @@ def get_sphere_full_data(user_id: str, sphere_name: str) -> tuple[str, dict]:
            type(r) AS edge_type, r.weight AS weight
     """
     return query, {"user_id": user_id, "sphere_name": sphere_name}
+
+
+# ── Sphere CRUD (Phase A) ─────────────────────────────────────────
+
+def get_spheres_with_ids(user_id: str) -> tuple[str, dict]:
+    """Get all non-archived spheres with elementId for frontend."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE NOT coalesce(s.archived, false)
+    RETURN elementId(s) AS id, s.name AS name,
+           coalesce(s.description, '') AS description
+    ORDER BY s.created_at
+    """
+    return query, {"user_id": user_id}
+
+
+def get_sphere_by_id(sphere_id: str) -> tuple[str, dict]:
+    """Get a single sphere by its elementId."""
+    query = """
+    MATCH (s:Sphere)
+    WHERE elementId(s) = $sphere_id AND NOT coalesce(s.archived, false)
+    RETURN elementId(s) AS id, s.name AS name, s.user_id AS user_id,
+           coalesce(s.description, '') AS description
+    """
+    return query, {"sphere_id": sphere_id}
+
+
+def get_sphere_detail(user_id: str, sphere_id: str) -> tuple[str, dict]:
+    """Get sphere + all related nodes (blockers, goals, patterns, values)."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE elementId(s) = $sphere_id AND NOT coalesce(s.archived, false)
+    OPTIONAL MATCH (n {user_id: $user_id})-[r]->(s)
+    RETURN elementId(s) AS id, s.name AS name,
+           coalesce(s.description, '') AS description,
+           collect(CASE WHEN n IS NOT NULL THEN {
+               labels: labels(n),
+               name: n.name,
+               description: coalesce(n.description, ''),
+               weight: r.weight,
+               edge_type: type(r)
+           } END) AS related
+    """
+    return query, {"user_id": user_id, "sphere_id": sphere_id}
+
+
+def get_related_spheres(user_id: str, sphere_id: str) -> tuple[str, dict]:
+    """Find other spheres connected through shared nodes."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE elementId(s) = $sphere_id
+    MATCH (n {user_id: $user_id})-[]->(s)
+    MATCH (n)-[]->(other:Sphere {user_id: $user_id})
+    WHERE other <> s AND NOT coalesce(other.archived, false)
+    RETURN DISTINCT other.name AS name
+    """
+    return query, {"user_id": user_id, "sphere_id": sphere_id}
+
+
+def rename_sphere(sphere_id: str, new_name: str) -> tuple[str, dict]:
+    query = """
+    MATCH (s:Sphere)
+    WHERE elementId(s) = $sphere_id
+    SET s.name = $new_name, s.updated_at = datetime()
+    RETURN elementId(s) AS id, s.name AS name, s.user_id AS user_id
+    """
+    return query, {"sphere_id": sphere_id, "new_name": new_name}
+
+
+def archive_sphere(sphere_id: str) -> tuple[str, dict]:
+    """Soft-delete: set archived = true."""
+    query = """
+    MATCH (s:Sphere)
+    WHERE elementId(s) = $sphere_id
+    SET s.archived = true, s.updated_at = datetime()
+    RETURN elementId(s) AS id, s.name AS name
+    """
+    return query, {"sphere_id": sphere_id}
+
+
+def create_sphere_with_id(user_id: str, sphere_name: str, description: str = "") -> tuple[str, dict]:
+    """Create sphere and return its elementId."""
+    query = """
+    CREATE (s:Sphere {
+        user_id: $user_id,
+        name: $sphere_name,
+        description: $description,
+        archived: false,
+        created_at: datetime(),
+        updated_at: datetime()
+    })
+    WITH s
+    MATCH (p:Person {user_id: $user_id})
+    CREATE (p)-[:AFFECTS {weight: 0.5, created_at: datetime()}]->(s)
+    RETURN elementId(s) AS id, s.name AS name
+    """
+    return query, {"user_id": user_id, "sphere_name": sphere_name, "description": description}
