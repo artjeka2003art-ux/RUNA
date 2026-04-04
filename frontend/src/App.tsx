@@ -21,7 +21,7 @@ type Tab = "today" | "lifemap" | "path" | "onboarding" | "reveal" | "sphere-deta
 const NAV_ITEMS: { id: Tab; label: string }[] = [
   { id: "today", label: "Today" },
   { id: "lifemap", label: "Life Map" },
-  { id: "path", label: "Path" },
+  { id: "path", label: "Decisions" },
 ];
 
 export interface RevealData {

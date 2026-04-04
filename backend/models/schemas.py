@@ -1,4 +1,6 @@
 from datetime import datetime
+from enum import Enum
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -190,6 +192,97 @@ class PredictionResponse(BaseModel):
     scenarios: list[PredictionScenario] = Field(default_factory=list)
     depends_on: str = ""
     next_step: str = ""
+    sources: list[PredictionSource] = Field(default_factory=list)
+
+
+# ── Decision Workspace entities ──────────────────────────────────
+
+
+class QuestionType(str, Enum):
+    decision = "decision"
+    trajectory = "trajectory"
+    change_impact = "change_impact"
+    relationship = "relationship"
+    pattern_risk = "pattern_risk"
+
+
+class ConfidenceLevel(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+# --- Request ---
+
+
+class WorkspaceQuery(BaseModel):
+    """User submits a question + optional scenario variants."""
+    user_id: str
+    question: str
+    sphere_id: str | None = None
+    variants: list[str] = Field(
+        default_factory=list,
+        description="User-defined scenario labels, e.g. ['уволиться в июне', 'остаться ещё на 3 месяца']",
+    )
+
+
+# --- Domain entities ---
+
+
+class MissingContextItem(BaseModel):
+    what: str = ""
+    why_important: str = ""
+    sphere_hint: str = ""
+
+
+class ContextCompleteness(BaseModel):
+    score: ConfidenceLevel = ConfidenceLevel.low
+    known_factors: list[str] = Field(default_factory=list)
+    missing: list[MissingContextItem] = Field(default_factory=list)
+
+
+class LeverageFactor(BaseModel):
+    factor: str = ""
+    direction: str = ""       # e.g. "increases risk" / "improves outcome"
+    weight: Literal["high", "medium", "low"] = "medium"
+
+
+class ScenarioReport(BaseModel):
+    """Prediction report for a single scenario variant."""
+    variant_label: str = ""
+    most_likely_outcome: str = ""
+    alternative_outcome: str = ""
+    main_risks: list[str] = Field(default_factory=list)
+    leverage_factors: list[LeverageFactor] = Field(default_factory=list)
+    confidence: ConfidenceLevel = ConfidenceLevel.low
+    confidence_reason: str = ""
+    affected_spheres: list[str] = Field(default_factory=list)
+    depends_on: str = ""
+    next_step: str = ""
+
+
+class ScenarioComparison(BaseModel):
+    """Comparison across scenario variants."""
+    summary: str = ""
+    key_tradeoffs: list[str] = Field(default_factory=list)
+    safest_variant: str = ""
+    highest_upside_variant: str = ""
+    most_sensitive_factor: str = ""
+
+
+# --- Workspace response ---
+
+
+class WorkspaceResponse(BaseModel):
+    """Full Decision Workspace result."""
+    question: str = ""
+    question_type: QuestionType = QuestionType.trajectory
+    restated_question: str = ""
+    variants: list[str] = Field(default_factory=list)
+    context_completeness: ContextCompleteness = Field(default_factory=ContextCompleteness)
+    reports: list[ScenarioReport] = Field(default_factory=list)
+    comparison: ScenarioComparison | None = None
+    external_insights: str = ""
     sources: list[PredictionSource] = Field(default_factory=list)
 
 

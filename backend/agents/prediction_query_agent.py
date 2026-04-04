@@ -30,6 +30,7 @@ _BOILERPLATE_PATTERNS = re.compile(
 )
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "prediction_query_prompt.txt"
+_WORKSPACE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "workspace_synthesis_prompt.txt"
 
 _QUESTION_TYPES = {
     "decision": "Вопрос о конкретном выборе / решении",
@@ -52,6 +53,7 @@ class PredictionQueryAgent:
         self.ai = ai_client
         self.graph = graph_client
         self._prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
+        self._workspace_prompt_template = _WORKSPACE_PROMPT_PATH.read_text(encoding="utf-8")
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -469,7 +471,107 @@ class PredictionQueryAgent:
 
         return "\n".join(parts), sources
 
-    # ── Step 4: Synthesis ────────────────────────────────────────────
+    # ── Public API: Decision Workspace ─────────────────────────────
+
+    _DEFAULT_VARIANTS_PROMPT = """Пользователь задал вопрос о жизненном решении, но не указал конкретные варианты сценариев.
+
+Вопрос: {question}
+Тип: {question_type}
+
+Предложи 2-3 конкретных варианта сценария для анализа. Каждый вариант — короткая фраза (3-7 слов).
+Верни ТОЛЬКО JSON массив строк, без markdown:
+["вариант 1", "вариант 2", "вариант 3"]"""
+
+    async def workspace(
+        self,
+        user_id: str,
+        question: str,
+        sphere_id: str | None = None,
+        variants: list[str] | None = None,
+    ) -> dict:
+        """Decision Workspace pipeline: classify → context → search → multi-scenario synthesis."""
+
+        question_type = await self._classify_question(question)
+        personal_context = await self._gather_context(user_id, sphere_id, question)
+        external_context, sources = await self._search_external(question, question_type)
+
+        # Auto-generate variants if user didn't provide them
+        if not variants:
+            variants = await self._generate_variants(question, question_type)
+
+        result = await self._synthesize_workspace(
+            question, question_type, personal_context, external_context, variants,
+        )
+
+        result["question"] = question
+        result["question_type"] = question_type
+        result["variants"] = variants
+        result["sources"] = sources
+        return result
+
+    async def _generate_variants(self, question: str, question_type: str) -> list[str]:
+        """Ask LLM to propose scenario variants when user didn't specify them."""
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": (
+                    self._DEFAULT_VARIANTS_PROMPT
+                    .replace("{question}", question)
+                    .replace("{question_type}", _QUESTION_TYPES.get(question_type, question_type))
+                )}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start != -1 and end != -1:
+                return json.loads(raw[start:end + 1])
+        except Exception:
+            pass
+        return [question]
+
+    async def _synthesize_workspace(
+        self,
+        question: str,
+        question_type: str,
+        personal_context: str,
+        external_context: str,
+        variants: list[str],
+    ) -> dict:
+        variants_text = "\n".join(f"- {v}" for v in variants)
+        prompt = (
+            self._workspace_prompt_template
+            .replace("{question}", question)
+            .replace("{question_type}", _QUESTION_TYPES.get(question_type, question_type))
+            .replace("{personal_context}", personal_context)
+            .replace("{external_context}", external_context or "Внешние источники пока не подключены.")
+            .replace("{variants}", variants_text)
+        )
+
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=3000,
+                temperature=0.4,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1:
+                raw = raw[start:end + 1]
+            return json.loads(raw)
+        except (json.JSONDecodeError, Exception):
+            return {
+                "restated_question": question,
+                "context_completeness": {"score": "low", "known_factors": [], "missing": []},
+                "reports": [],
+                "comparison": None,
+                "external_insights": "",
+            }
+
+    # ── Step 4: Synthesis (legacy single-answer) ────────────────────
 
     async def _synthesize(
         self,

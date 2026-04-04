@@ -1,24 +1,12 @@
-import { useState, useEffect } from "react";
-import { getScenarios, sendPredictionQuery } from "./api";
-import { buildPathVM, type PathVM } from "./mappers/scenarios";
-
-interface PredictionSource {
-  title: string;
-  url: string;
-  domain: string;
-}
-
-interface PredictionResult {
-  questionType: string;
-  restatedQuestion: string;
-  summary: string;
-  influencers: { type: string; name: string; detail: string }[];
-  externalInsights: string;
-  scenarios: { label: string; title: string; description: string }[];
-  dependsOn: string;
-  nextStep: string;
-  sources: PredictionSource[];
-}
+import { useState } from "react";
+import {
+  sendWorkspaceQuery,
+  type WorkspaceResult,
+  type ScenarioReport,
+  type ContextCompleteness,
+  type ScenarioComparison,
+  type LeverageFactor,
+} from "./api";
 
 const TYPE_LABELS: Record<string, string> = {
   decision: "Решение",
@@ -28,167 +16,198 @@ const TYPE_LABELS: Record<string, string> = {
   pattern_risk: "Паттерн / риск",
 };
 
+const CONFIDENCE_LABELS: Record<string, string> = {
+  low: "Низкая",
+  medium: "Средняя",
+  high: "Высокая",
+};
+
+const CONFIDENCE_COLORS: Record<string, string> = {
+  low: "#ef4444",
+  medium: "#f59e0b",
+  high: "#22c55e",
+};
+
+const WEIGHT_LABELS: Record<string, string> = {
+  high: "Сильное",
+  medium: "Среднее",
+  low: "Слабое",
+};
+
 export default function PredictionView({ userId }: { userId: string }) {
-  const [vm, setVm] = useState<PathVM | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  // Query state
   const [question, setQuestion] = useState("");
-  const [queryLoading, setQueryLoading] = useState(false);
-  const [result, setResult] = useState<PredictionResult | null>(null);
+  const [variants, setVariants] = useState<string[]>([""]);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<WorkspaceResult | null>(null);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const res = await getScenarios(userId);
-        if (res.success && res.data.scenarios?.length) {
-          setVm(buildPathVM(res.data));
-        }
-      } catch {}
-      setLoading(false);
-    }
-    load();
-  }, [userId]);
+  function addVariant() {
+    setVariants((v) => [...v, ""]);
+  }
 
-  async function handleAsk() {
+  function removeVariant(index: number) {
+    setVariants((v) => v.filter((_, i) => i !== index));
+  }
+
+  function updateVariant(index: number, value: string) {
+    setVariants((v) => v.map((item, i) => (i === index ? value : item)));
+  }
+
+  async function handleAnalyze() {
     const q = question.trim();
-    if (!q || queryLoading) return;
-    setQueryLoading(true);
+    if (!q || loading) return;
+    setLoading(true);
     setResult(null);
     try {
-      const res = await sendPredictionQuery(userId, q);
+      const res = await sendWorkspaceQuery(userId, q, variants);
       if (res.success && res.data) {
-        setResult({
-          questionType: res.data.question_type || "",
-          restatedQuestion: res.data.restated_question || "",
-          summary: res.data.summary || "",
-          influencers: (res.data.influencers || []).map((i: any) => ({
-            type: i.type || "", name: i.name || "", detail: i.detail || "",
-          })),
-          externalInsights: res.data.external_insights || "",
-          scenarios: (res.data.scenarios || []).map((s: any) => ({
-            label: s.label || "", title: s.title || "", description: s.description || "",
-          })),
-          dependsOn: res.data.depends_on || "",
-          nextStep: res.data.next_step || "",
-          sources: (res.data.sources || []).map((s: any) => ({
-            title: s.title || "", url: s.url || "", domain: s.domain || "",
-          })),
-        });
+        setResult(res.data as WorkspaceResult);
       }
-    } catch {}
-    setQueryLoading(false);
+    } catch {
+      /* ignore */
+    }
+    setLoading(false);
   }
 
   return (
-    <div className="path-view">
-      <div className="path-header">
-        <h2>Prediction</h2>
-        <p className="path-subtitle">Задай вопрос о своём будущем, выборе или траектории</p>
+    <div className="ws-view">
+      {/* Header */}
+      <div className="ws-header">
+        <h2>Decision Workspace</h2>
+        <p className="ws-subtitle">
+          Смоделируй варианты решения и сравни последствия
+        </p>
       </div>
 
-      {/* ── Query Input ── */}
-      <div className="pq-input-wrap">
+      {/* Question Input */}
+      <div className="ws-section">
+        <label className="ws-label">Твой вопрос</label>
         <input
-          className="pq-input"
+          className="ws-input"
           type="text"
           placeholder="Что будет, если я...?"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleAsk(); }}
-          disabled={queryLoading}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleAnalyze();
+          }}
+          disabled={loading}
         />
-        <button className="pq-btn" onClick={handleAsk} disabled={queryLoading || !question.trim()}>
-          {queryLoading ? "Думаю..." : "Спросить"}
-        </button>
       </div>
 
-      {/* ── Query Result ── */}
-      {result && (
-        <div className="pq-result">
-          {/* Type badge */}
-          <div className="pq-type-badge">{TYPE_LABELS[result.questionType] || result.questionType}</div>
-
-          {/* Restated question */}
-          {result.restatedQuestion && (
-            <div className="pq-section pq-restated">
-              <p className="pq-restated-text">"{result.restatedQuestion}"</p>
+      {/* Scenario Variants Editor */}
+      <div className="ws-section">
+        <label className="ws-label">Варианты сценариев</label>
+        <p className="ws-hint">
+          Добавь варианты для сравнения. Если оставить пустым — система
+          предложит свои.
+        </p>
+        <div className="ws-variants">
+          {variants.map((v, i) => (
+            <div key={i} className="ws-variant-row">
+              <span className="ws-variant-num">{i + 1}</span>
+              <input
+                className="ws-variant-input"
+                type="text"
+                placeholder={`Вариант ${i + 1}, напр. "уволиться в июне"`}
+                value={v}
+                onChange={(e) => updateVariant(i, e.target.value)}
+                disabled={loading}
+              />
+              {variants.length > 1 && (
+                <button
+                  className="ws-variant-remove"
+                  onClick={() => removeVariant(i)}
+                  disabled={loading}
+                  title="Удалить"
+                >
+                  &times;
+                </button>
+              )}
             </div>
-          )}
+          ))}
+          <button
+            className="ws-variant-add"
+            onClick={addVariant}
+            disabled={loading}
+          >
+            + Добавить вариант
+          </button>
+        </div>
+      </div>
 
-          {/* Summary */}
-          <div className="pq-section">
-            <h3 className="pq-section-title">Краткий вывод</h3>
-            <p className="pq-text">{result.summary}</p>
+      {/* Run button */}
+      <button
+        className="ws-run-btn"
+        onClick={handleAnalyze}
+        disabled={loading || !question.trim()}
+      >
+        {loading ? "Анализирую сценарии..." : "Запустить анализ"}
+      </button>
+
+      {/* Loading */}
+      {loading && (
+        <div className="ws-loading">
+          <div className="spinner" />
+          <p>Строю сценарии и сравниваю варианты...</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {result && (
+        <div className="ws-results">
+          {/* Type + restated question */}
+          <div className="ws-result-header">
+            <span className="ws-type-badge">
+              {TYPE_LABELS[result.question_type] || result.question_type}
+            </span>
+            {result.restated_question && (
+              <div className="ws-restated">"{result.restated_question}"</div>
+            )}
           </div>
 
-          {/* Influencers */}
-          {result.influencers.length > 0 && (
-            <div className="pq-section">
-              <h3 className="pq-section-title">Что влияет на прогноз</h3>
-              <div className="pq-influencers">
-                {result.influencers.map((inf, i) => (
-                  <div key={i} className={`pq-influencer pq-inf-${inf.type}`}>
-                    <span className="pq-inf-type">{inf.type}</span>
-                    <span className="pq-inf-name">{inf.name}</span>
-                    {inf.detail && <span className="pq-inf-detail">{inf.detail}</span>}
-                  </div>
+          {/* Context Completeness */}
+          <ContextCompletenessBlock data={result.context_completeness} />
+
+          {/* Scenario Reports */}
+          {result.reports.length > 0 && (
+            <div className="ws-block">
+              <h3 className="ws-block-title">Сценарии</h3>
+              <div className="ws-reports">
+                {result.reports.map((r, i) => (
+                  <ReportCard key={i} report={r} />
                 ))}
               </div>
             </div>
           )}
 
-          {/* External insights */}
-          {result.externalInsights && (
-            <div className="pq-section">
-              <h3 className="pq-section-title">Что говорят источники</h3>
-              <p className="pq-text">{result.externalInsights}</p>
-            </div>
+          {/* Comparison */}
+          {result.comparison && result.reports.length > 1 && (
+            <ComparisonBlock data={result.comparison} />
           )}
 
-          {/* Scenarios */}
-          {result.scenarios.length > 0 && (
-            <div className="pq-section">
-              <h3 className="pq-section-title">Сценарии</h3>
-              {result.scenarios.map((s, i) => (
-                <div key={i} className={`pq-scenario pq-scenario-${s.label}`}>
-                  <div className="pq-scenario-label">
-                    {s.label === "most_likely" ? "Наиболее вероятный" : "Альтернативный"}
-                  </div>
-                  <div className="pq-scenario-title">{s.title}</div>
-                  <p className="pq-text">{s.description}</p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Depends on */}
-          {result.dependsOn && (
-            <div className="pq-section">
-              <h3 className="pq-section-title">От чего зависит исход</h3>
-              <p className="pq-text">{result.dependsOn}</p>
-            </div>
-          )}
-
-          {/* Next step */}
-          {result.nextStep && (
-            <div className="pq-section pq-next-step">
-              <h3 className="pq-section-title">Следующий шаг</h3>
-              <p className="pq-next-step-text">{result.nextStep}</p>
+          {/* External Insights */}
+          {result.external_insights && (
+            <div className="ws-block">
+              <h3 className="ws-block-title">Что говорят источники</h3>
+              <p className="ws-text">{result.external_insights}</p>
             </div>
           )}
 
           {/* Sources */}
-          {result.sources.length > 0 && (
-            <div className="pq-section pq-sources">
-              <h3 className="pq-section-title">На что опирался разбор</h3>
-              <div className="pq-sources-list">
+          {result.sources?.length > 0 && (
+            <div className="ws-block">
+              <h3 className="ws-block-title">Источники</h3>
+              <div className="ws-sources">
                 {result.sources.map((s, i) => (
-                  <a key={i} className="pq-source" href={s.url} target="_blank" rel="noopener noreferrer">
-                    <span className="pq-source-domain">{s.domain}</span>
-                    <span className="pq-source-title">{s.title}</span>
+                  <a
+                    key={i}
+                    className="ws-source"
+                    href={s.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <span className="ws-source-domain">{s.domain}</span>
+                    <span className="ws-source-title">{s.title}</span>
                   </a>
                 ))}
               </div>
@@ -196,68 +215,184 @@ export default function PredictionView({ userId }: { userId: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* ── Old auto-generated scenarios (secondary) ── */}
-      {vm && (
-        <>
-          <div className="pq-divider">
-            <span>Автоматические маршруты</span>
+/* ── Sub-components ── */
+
+function ContextCompletenessBlock({ data }: { data: ContextCompleteness }) {
+  if (!data) return null;
+  const color = CONFIDENCE_COLORS[data.score] || CONFIDENCE_COLORS.low;
+
+  return (
+    <div className="ws-block ws-context-block">
+      <h3 className="ws-block-title">
+        Полнота контекста
+        <span className="ws-confidence-badge" style={{ color, borderColor: color }}>
+          {CONFIDENCE_LABELS[data.score] || data.score}
+        </span>
+      </h3>
+
+      {data.known_factors?.length > 0 && (
+        <div className="ws-context-known">
+          <span className="ws-mini-label">Известно:</span>
+          <div className="ws-tag-list">
+            {data.known_factors.map((f, i) => (
+              <span key={i} className="ws-tag ws-tag-known">{f}</span>
+            ))}
           </div>
-          <div className="path-scenarios">
-            {vm.scenarios.map((s) => (
-              <div key={s.type} className={`path-card ${s.isMain ? "path-card-main" : ""}`} style={{ borderLeftColor: s.accent }}>
-                <div className="path-card-head">
-                  <div>
-                    <span className="path-card-type" style={{ color: s.accent }}>{s.label}</span>
-                    <div className="path-card-question">{s.question}</div>
-                  </div>
-                  <span className="path-card-prob" style={{ color: s.accent }}>{s.probability}%</span>
-                </div>
-                {s.title && <div className="path-card-title">{s.title}</div>}
-                {s.narrative && <p className="path-card-narrative">{s.narrative}</p>}
-                <div className="path-card-meta">
-                  {s.horizonLabel && <div className="path-card-horizon"><span className="path-meta-label">Горизонт:</span> {s.horizonLabel}</div>}
-                  <div className="path-card-score">
-                    <span className="path-score-from">{s.scoreFrom}</span>
-                    <span className="path-score-arrow">&#x2192;</span>
-                    <span className="path-score-to">{s.scoreTo}</span>
-                    <span className="path-score-delta" style={{ color: s.scoreDelta >= 0 ? "#22c55e" : "#ef4444" }}>
-                      ({s.scoreDelta >= 0 ? "+" : ""}{s.scoreDelta})
-                    </span>
-                  </div>
-                  {s.risk && <div className="path-card-risk"><span className="path-meta-label">Риск:</span> {s.risk}</div>}
-                  {s.firstStep && <div className="path-card-step"><span className="path-meta-label">Первый шаг:</span> {s.firstStep}</div>}
-                </div>
+        </div>
+      )}
+
+      {data.missing?.length > 0 && (
+        <div className="ws-context-missing">
+          <span className="ws-mini-label">Чего не хватает:</span>
+          <div className="ws-missing-list">
+            {data.missing.map((m, i) => (
+              <div key={i} className="ws-missing-item">
+                <div className="ws-missing-what">{m.what}</div>
+                <div className="ws-missing-why">{m.why_important}</div>
+                {m.sphere_hint && (
+                  <span className="ws-missing-sphere">{m.sphere_hint}</span>
+                )}
               </div>
             ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-          {(vm.leverage || vm.warning) && (
-            <div className="path-insights">
-              {vm.leverage && (
-                <div className="path-insight-card path-insight-leverage">
-                  <div className="path-insight-label">Главная точка влияния</div>
-                  <p>{vm.leverage}</p>
-                </div>
-              )}
-              {vm.warning && (
-                <div className="path-insight-card path-insight-warning">
-                  <div className="path-insight-label">На что обратить внимание</div>
-                  <p>{vm.warning}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </>
+function ReportCard({ report }: { report: ScenarioReport }) {
+  const confColor = CONFIDENCE_COLORS[report.confidence] || CONFIDENCE_COLORS.low;
+
+  return (
+    <div className="ws-report-card">
+      <div className="ws-report-head">
+        <div className="ws-report-label">{report.variant_label}</div>
+        <span
+          className="ws-confidence-badge"
+          style={{ color: confColor, borderColor: confColor }}
+        >
+          {CONFIDENCE_LABELS[report.confidence] || report.confidence}
+        </span>
+      </div>
+
+      {/* Most likely outcome */}
+      <div className="ws-report-section">
+        <span className="ws-mini-label">Наиболее вероятный исход</span>
+        <p className="ws-text">{report.most_likely_outcome}</p>
+      </div>
+
+      {/* Alternative */}
+      {report.alternative_outcome && (
+        <div className="ws-report-section">
+          <span className="ws-mini-label">Альтернативный исход</span>
+          <p className="ws-text ws-text-muted">{report.alternative_outcome}</p>
+        </div>
       )}
 
-      {loading && <div className="path-loading"><div className="spinner" /></div>}
-
-      {!loading && !vm && !result && (
-        <p className="empty-state" style={{ marginTop: 24 }}>
-          Задай вопрос выше — или сделай несколько чекинов, чтобы появились автоматические маршруты.
-        </p>
+      {/* Risks */}
+      {report.main_risks?.length > 0 && (
+        <div className="ws-report-section">
+          <span className="ws-mini-label">Основные риски</span>
+          <ul className="ws-risk-list">
+            {report.main_risks.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        </div>
       )}
+
+      {/* Leverage factors */}
+      {report.leverage_factors?.length > 0 && (
+        <div className="ws-report-section">
+          <span className="ws-mini-label">Что сильнее всего меняет исход</span>
+          <div className="ws-leverage-list">
+            {report.leverage_factors.map((lf, i) => (
+              <LeverageFactorTag key={i} data={lf} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Affected spheres */}
+      {report.affected_spheres?.length > 0 && (
+        <div className="ws-report-section">
+          <span className="ws-mini-label">Затронутые сферы</span>
+          <div className="ws-tag-list">
+            {report.affected_spheres.map((s, i) => (
+              <span key={i} className="ws-tag">{s}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Next step */}
+      {report.next_step && (
+        <div className="ws-report-next">
+          <span className="ws-mini-label">Следующий шаг</span>
+          <p className="ws-next-text">{report.next_step}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LeverageFactorTag({ data }: { data: LeverageFactor }) {
+  const weightColor =
+    data.weight === "high" ? "#ef4444" : data.weight === "medium" ? "#f59e0b" : "#71717a";
+  return (
+    <div className="ws-leverage-item">
+      <span className="ws-leverage-factor">{data.factor}</span>
+      <span className="ws-leverage-dir">{data.direction}</span>
+      <span className="ws-leverage-weight" style={{ color: weightColor }}>
+        {WEIGHT_LABELS[data.weight] || data.weight}
+      </span>
+    </div>
+  );
+}
+
+function ComparisonBlock({ data }: { data: ScenarioComparison }) {
+  return (
+    <div className="ws-block ws-comparison-block">
+      <h3 className="ws-block-title">Сравнение сценариев</h3>
+
+      {data.summary && <p className="ws-text">{data.summary}</p>}
+
+      {data.key_tradeoffs?.length > 0 && (
+        <div className="ws-comp-section">
+          <span className="ws-mini-label">Ключевые trade-offs</span>
+          <ul className="ws-tradeoff-list">
+            {data.key_tradeoffs.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="ws-comp-grid">
+        {data.safest_variant && (
+          <div className="ws-comp-cell">
+            <span className="ws-mini-label">Безопаснее всего</span>
+            <span className="ws-comp-value ws-comp-safe">{data.safest_variant}</span>
+          </div>
+        )}
+        {data.highest_upside_variant && (
+          <div className="ws-comp-cell">
+            <span className="ws-mini-label">Максимальный потенциал</span>
+            <span className="ws-comp-value ws-comp-upside">{data.highest_upside_variant}</span>
+          </div>
+        )}
+        {data.most_sensitive_factor && (
+          <div className="ws-comp-cell ws-comp-cell-full">
+            <span className="ws-mini-label">Самый чувствительный фактор</span>
+            <span className="ws-comp-value ws-comp-factor">{data.most_sensitive_factor}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
