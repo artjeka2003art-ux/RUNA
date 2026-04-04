@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.routes import onboarding, checkin, dashboard, spheres
+from backend.api.routes import onboarding, checkin, dashboard, spheres, prediction
 from backend.graph.neo4j_client import Neo4jClient
 from backend.graph.graph_builder import GraphBuilder
 from backend.memory.session_store import SessionStore
@@ -14,6 +14,7 @@ from backend.agents.companion_agent import CompanionAgent
 from backend.agents.analyst_agent import AnalystAgent
 from backend.agents.scenario_agent import ScenarioAgent
 from backend.agents.sphere_agent import SphereAgent
+from backend.agents.prediction_query_agent import PredictionQueryAgent
 from backend.scoring.life_score_engine import LifeScoreEngine
 
 
@@ -61,7 +62,8 @@ async def lifespan(app: FastAPI):
     companion_agent = CompanionAgent(ai_client, neo4j, session_store, zep_client)
     analyst_agent = AnalystAgent(ai_client, neo4j, graph_builder)
     scenario_agent = ScenarioAgent(ai_client, neo4j)
-    sphere_agent = SphereAgent(ai_client, neo4j, session_store)
+    sphere_agent = SphereAgent(ai_client, neo4j, session_store, zep_client)
+    prediction_query_agent = PredictionQueryAgent(ai_client, neo4j)
 
     # Make available to routes
     app.state.neo4j = neo4j
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.scenario_agent = scenario_agent
     app.state.sphere_agent = sphere_agent
     app.state.life_score_engine = life_score_engine
+    app.state.prediction_query_agent = prediction_query_agent
 
     yield
 
@@ -84,7 +87,7 @@ app = FastAPI(title="Runa", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -94,6 +97,7 @@ app.include_router(onboarding.router, prefix="/api")
 app.include_router(checkin.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(spheres.router, prefix="/api")
+app.include_router(prediction.router, prefix="/api")
 
 
 @app.get("/health")

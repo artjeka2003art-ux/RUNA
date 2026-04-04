@@ -51,6 +51,36 @@ export async function getScenarios(userId: string) {
   return res.json();
 }
 
+export async function getDailyCompass(userId: string) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/compass`);
+  return res.json();
+}
+
+export async function submitOneMoveFeedback(
+  userId: string,
+  status: "done" | "not_done",
+  oneMove: string,
+  sphereName: string,
+) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/one-move-feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, status, one_move: oneMove, sphere_name: sphereName }),
+  });
+  return res.json();
+}
+
+// ── Prediction Query ──
+
+export async function sendPredictionQuery(userId: string, question: string, sphereId?: string) {
+  const res = await fetch(`${BASE}/prediction/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, question, sphere_id: sphereId || null }),
+  });
+  return res.json();
+}
+
 // ── Spheres (Phase A) ──
 
 export async function getSpheres(userId: string) {

@@ -4,28 +4,41 @@ from backend.constants import AI_MODEL
 from backend.graph.neo4j_client import Neo4jClient
 from backend.graph import graph_queries
 from backend.memory.session_store import SessionStore
+from backend.memory.zep_client import ZepMemoryClient
 
 SPHERE_PROMPT_TEMPLATE = (Path(__file__).parent.parent / "prompts" / "sphere_chat_prompt.txt").read_text()
 
 
 class SphereAgent:
-    """Chat agent scoped to a single sphere but aware of the full graph."""
+    """Chat agent scoped to a single sphere but aware of the full graph.
+
+    Memory layers:
+    - Redis (SessionStore): short-term session history (last 20 messages)
+    - Zep (ZepMemoryClient): long-term episodic memory per sphere thread
+    - Neo4j (graph): structural knowledge
+    """
 
     def __init__(
         self,
         ai_client,
         graph_client: Neo4jClient,
         session_store: SessionStore,
+        zep_client: ZepMemoryClient | None = None,
     ):
         self.ai = ai_client
         self.graph = graph_client
         self.sessions = session_store
+        self.zep = zep_client
         self.model = AI_MODEL
 
-    async def respond(self, user_id: str, sphere_id: str, sphere_name: str, message: str) -> str:
-        """Generate a response grounded in sphere context + global graph."""
+    def _sphere_thread_id(self, user_id: str, sphere_id: str) -> str:
+        """Deterministic Zep thread ID per user + sphere."""
+        return f"sphere-{user_id}-{sphere_id}"
 
-        # 1. Sphere-specific context
+    async def respond(self, user_id: str, sphere_id: str, sphere_name: str, message: str) -> str:
+        """Generate a response grounded in sphere context + global graph + Zep memory."""
+
+        # 1. Sphere-specific context (graph nodes)
         sphere_context, sphere_desc = await self._build_sphere_context(user_id, sphere_name)
 
         # 2. Related spheres
@@ -37,12 +50,22 @@ class SphereAgent:
         # 4. Recent checkins
         recent_checkins = await self._get_recent_checkins(user_id)
 
-        # 5. Session history for this sphere chat
+        # 5. Long-term memory from Zep (sphere-specific thread)
+        zep_context = ""
+        if self.zep:
+            thread_id = self._sphere_thread_id(user_id, sphere_id)
+            zep_context = await self.zep.get_user_context(user_id, thread_id)
+
+        # 6. Short-term session history from Redis
         session_key = f"sphere-{user_id}-{sphere_id}"
         history = await self.sessions.get_session(session_key) or []
         history.append({"role": "user", "content": message})
 
-        # 6. Build prompt
+        # 7. Build prompt — add Zep memory section if available
+        memory_section = ""
+        if zep_context:
+            memory_section = f"\n\n## Долгосрочная память по этой сфере\n{zep_context}"
+
         system_prompt = SPHERE_PROMPT_TEMPLATE.format(
             sphere_name=sphere_name,
             sphere_description=sphere_desc,
@@ -50,11 +73,11 @@ class SphereAgent:
             related_spheres=related,
             global_context=global_context,
             recent_checkins=recent_checkins,
-        )
+        ) + memory_section
 
         api_messages = [{"role": "system", "content": system_prompt}] + history
 
-        # 7. Call AI
+        # 8. Call AI
         response = await self.ai.chat.completions.create(
             model=self.model,
             max_tokens=1024,
@@ -63,9 +86,17 @@ class SphereAgent:
 
         reply = response.choices[0].message.content
 
-        # 8. Save history
+        # 9. Save to Redis (short-term)
         history.append({"role": "assistant", "content": reply})
         await self.sessions.save_session(session_key, history)
+
+        # 10. Save to Zep (long-term) — non-blocking
+        if self.zep:
+            try:
+                thread_id = self._sphere_thread_id(user_id, sphere_id)
+                await self.zep.add_messages(user_id, thread_id, message, reply)
+            except Exception:
+                pass  # Zep failure must not block sphere chat
 
         return reply
 

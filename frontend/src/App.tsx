@@ -78,6 +78,9 @@ function App() {
       const detail = (e as CustomEvent).detail;
       if (detail === "checkin") switchTab("checkin");
       if (detail === "lifemap") switchTab("lifemap");
+      if (typeof detail === "object" && detail?.tab === "sphere-detail" && detail?.sphereId) {
+        handleOpenSphere(detail.sphereId);
+      }
     };
     window.addEventListener("runa-navigate", handler);
     return () => window.removeEventListener("runa-navigate", handler);

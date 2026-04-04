@@ -136,7 +136,7 @@ async def rename_sphere(sphere_id: str, payload: SphereRename, request: Request)
     graph_builder = request.app.state.graph_builder
 
     try:
-        result = await graph_builder.rename_sphere(sphere_id, payload.name)
+        result = await graph_builder.rename_sphere(payload.user_id, sphere_id, payload.name)
         if not result:
             return APIResponse(success=False, error="Sphere not found")
 
@@ -156,7 +156,7 @@ async def delete_sphere(sphere_id: str, user_id: str, request: Request):
     graph_builder = request.app.state.graph_builder
 
     try:
-        ok = await graph_builder.archive_sphere(sphere_id)
+        ok = await graph_builder.archive_sphere(user_id, sphere_id)
         if not ok:
             return APIResponse(success=False, error="Sphere not found")
 
@@ -177,7 +177,7 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
         # 1. Get sphere info
         from backend.graph import graph_queries
         neo4j = request.app.state.neo4j
-        rows = await neo4j.execute_query(*graph_queries.get_sphere_by_id(sphere_id))
+        rows = await neo4j.execute_query(*graph_queries.get_sphere_by_id(payload.user_id, sphere_id))
         if not rows:
             return APIResponse(success=False, error="Sphere not found")
 
@@ -214,7 +214,7 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
                 sphere_desc = await sphere_agent.generate_description(
                     payload.user_id, sphere_name, payload.message,
                 )
-                await graph_builder.update_sphere_description(sphere_id, sphere_desc)
+                await graph_builder.update_sphere_description(payload.user_id, sphere_id, sphere_desc)
         except Exception:
             pass
 

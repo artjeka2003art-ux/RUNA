@@ -29,6 +29,24 @@ export interface ScorePoint {
   label: string;
 }
 
+export interface ActionTraceVM {
+  status: string;
+  message: string;
+  sphereName: string;
+}
+
+export interface CompassVM {
+  dailyState: string;
+  dailyStateReason: string;
+  keyShiftTitle: string;
+  keyShiftReason: string;
+  focusSphere: { id: string; name: string; score: number } | null;
+  oneMove: string;
+  oneMoveReason: string;
+  costOfIgnoring: string;
+  lastActionTrace: ActionTraceVM | null;
+}
+
 export interface TodayVM {
   date: string;
   total: number;
@@ -45,6 +63,7 @@ export interface TodayVM {
   pessimisticPreview: { text: string; delta: number | null } | null;
   optimisticPreview: { text: string; delta: number | null } | null;
   scoreHistory: ScorePoint[];
+  compass: CompassVM | null;
 }
 
 const R = 85;
@@ -70,6 +89,7 @@ export function buildTodayVM(
   graphData: any,
   scenarioData: any,
   historyData?: any,
+  compassData?: any,
 ): TodayVM {
   const total = scoreData?.total ?? 0;
   const spheres = scoreData?.spheres ?? [];
@@ -142,6 +162,27 @@ export function buildTodayVM(
     month: "long",
   });
 
+  // Compass
+  const compass: CompassVM | null = compassData
+    ? {
+        dailyState: compassData.daily_state || "",
+        dailyStateReason: compassData.daily_state_reason || "",
+        keyShiftTitle: compassData.key_shift_title || "",
+        keyShiftReason: compassData.key_shift_reason || "",
+        focusSphere: compassData.focus_sphere || null,
+        oneMove: compassData.one_move || "",
+        oneMoveReason: compassData.one_move_reason || "",
+        costOfIgnoring: compassData.cost_of_ignoring || "",
+        lastActionTrace: compassData.last_action_trace
+          ? {
+              status: compassData.last_action_trace.status || "",
+              message: compassData.last_action_trace.message || "",
+              sphereName: compassData.last_action_trace.sphere_name || "",
+            }
+          : null,
+      }
+    : null;
+
   return {
     date: today,
     total: Math.round(total),
@@ -158,6 +199,7 @@ export function buildTodayVM(
     pessimisticPreview,
     optimisticPreview,
     scoreHistory,
+    compass,
   };
 }
 

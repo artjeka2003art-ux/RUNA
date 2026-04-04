@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from backend.models.schemas import APIResponse
+from backend.models.schemas import APIResponse, OneMoveFeedback
 from backend.graph import graph_queries
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -71,6 +71,83 @@ async def get_score_history(user_id: str, request: Request):
         return APIResponse(success=True, data={
             "user_id": user_id,
             "history": history,
+        })
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.get("/{user_id}/compass", response_model=APIResponse)
+async def get_daily_compass(user_id: str, request: Request):
+    """Daily Compass — retention core of the Today screen."""
+    life_score_engine = request.app.state.life_score_engine
+    try:
+        compass = await life_score_engine.calculate_compass(user_id)
+        return APIResponse(success=True, data=compass.model_dump())
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.post("/{user_id}/one-move-feedback", response_model=APIResponse)
+async def submit_one_move_feedback(user_id: str, body: OneMoveFeedback, request: Request):
+    """Record whether user completed their one move. Deduplicates by one_move text."""
+    graph = request.app.state.neo4j
+    try:
+        status = body.status
+        if status not in ("done", "not_done"):
+            return APIResponse(success=False, error="status must be 'done' or 'not_done'")
+
+        # ── Deduplicate: check if feedback for this exact one_move already exists
+        q_dup = """
+        MATCH (af:ActionFeedback {user_id: $uid})
+        WHERE af.one_move = $one_move
+          AND af.created_at > datetime() - duration('PT12H')
+        RETURN af.status AS status
+        LIMIT 1
+        """
+        dup_rows = await graph.execute_query(q_dup, {"uid": user_id, "one_move": body.one_move})
+        if dup_rows:
+            prev = dup_rows[0].get("status", "")
+            return APIResponse(success=True, data={
+                "status": prev,
+                "message": "Уже учтено. Система запомнила твой ответ.",
+                "score_impact": 0,
+                "duplicate": True,
+            })
+
+        # ── Save feedback node
+        q, p = graph_queries.create_action_feedback(
+            user_id, status, body.one_move, body.sphere_name,
+        )
+        await graph.execute_query(q, p)
+
+        # ── If done: slightly boost focus sphere's positive edges
+        score_impact = 0.0
+        if status == "done" and body.sphere_name:
+            try:
+                q_boost = """
+                MATCH (n)-[r]->(s:Sphere {user_id: $uid, name: $sname})
+                WHERE (n:Goal OR n:Value) AND r.weight < 1.0
+                WITH n, r, s ORDER BY r.weight ASC LIMIT 1
+                SET r.weight = CASE WHEN r.weight + 0.05 > 1.0 THEN 1.0
+                                    ELSE r.weight + 0.05 END,
+                    r.updated_at = datetime()
+                RETURN n.name AS boosted, r.weight AS new_weight
+                """
+                rows = await graph.execute_query(q_boost, {"uid": user_id, "sname": body.sphere_name})
+                if rows:
+                    score_impact = 0.05 * 15.0
+            except Exception:
+                pass
+
+        if status == "done":
+            message = "Зафиксировано. Это реальный шаг — система учтёт его в твоей траектории."
+        else:
+            message = "Честно — тоже важно. Система видит это и учтёт при следующем расчёте."
+
+        return APIResponse(success=True, data={
+            "status": status,
+            "message": message,
+            "score_impact": round(score_impact, 1),
         })
     except Exception as e:
         return APIResponse(success=False, error=str(e))

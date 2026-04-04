@@ -16,9 +16,11 @@ def create_person(user_id: str, name: str) -> tuple[str, dict]:
 # ── Sphere ──────────────────────────────────────────────────────────
 
 def create_sphere(user_id: str, sphere_name: str) -> tuple[str, dict]:
+    """Create a sphere. Always creates new node (no MERGE on name).
+    For onboarding: uses MERGE to be idempotent on retry."""
     query = """
     MERGE (s:Sphere {user_id: $user_id, name: $sphere_name})
-    ON CREATE SET s.created_at = datetime(), s.updated_at = datetime()
+    ON CREATE SET s.created_at = datetime(), s.updated_at = datetime(), s.archived = false
     ON MATCH SET s.updated_at = datetime()
     RETURN s
     """
@@ -330,15 +332,15 @@ def get_spheres_with_ids(user_id: str) -> tuple[str, dict]:
     return query, {"user_id": user_id}
 
 
-def get_sphere_by_id(sphere_id: str) -> tuple[str, dict]:
-    """Get a single sphere by its elementId."""
+def get_sphere_by_id(user_id: str, sphere_id: str) -> tuple[str, dict]:
+    """Get a single sphere by its elementId. Ownership-safe."""
     query = """
-    MATCH (s:Sphere)
+    MATCH (s:Sphere {user_id: $user_id})
     WHERE elementId(s) = $sphere_id AND NOT coalesce(s.archived, false)
     RETURN elementId(s) AS id, s.name AS name, s.user_id AS user_id,
            coalesce(s.description, '') AS description
     """
-    return query, {"sphere_id": sphere_id}
+    return query, {"user_id": user_id, "sphere_id": sphere_id}
 
 
 def get_sphere_detail(user_id: str, sphere_id: str) -> tuple[str, dict]:
@@ -373,25 +375,26 @@ def get_related_spheres(user_id: str, sphere_id: str) -> tuple[str, dict]:
     return query, {"user_id": user_id, "sphere_id": sphere_id}
 
 
-def rename_sphere(sphere_id: str, new_name: str) -> tuple[str, dict]:
+def rename_sphere(user_id: str, sphere_id: str, new_name: str) -> tuple[str, dict]:
+    """Ownership-safe rename."""
     query = """
-    MATCH (s:Sphere)
+    MATCH (s:Sphere {user_id: $user_id})
     WHERE elementId(s) = $sphere_id
     SET s.name = $new_name, s.updated_at = datetime()
     RETURN elementId(s) AS id, s.name AS name, s.user_id AS user_id
     """
-    return query, {"sphere_id": sphere_id, "new_name": new_name}
+    return query, {"user_id": user_id, "sphere_id": sphere_id, "new_name": new_name}
 
 
-def archive_sphere(sphere_id: str) -> tuple[str, dict]:
-    """Soft-delete: set archived = true."""
+def archive_sphere(user_id: str, sphere_id: str) -> tuple[str, dict]:
+    """Ownership-safe soft-delete."""
     query = """
-    MATCH (s:Sphere)
+    MATCH (s:Sphere {user_id: $user_id})
     WHERE elementId(s) = $sphere_id
     SET s.archived = true, s.updated_at = datetime()
     RETURN elementId(s) AS id, s.name AS name
     """
-    return query, {"sphere_id": sphere_id}
+    return query, {"user_id": user_id, "sphere_id": sphere_id}
 
 
 def create_sphere_with_id(user_id: str, sphere_name: str, description: str = "") -> tuple[str, dict]:
@@ -413,11 +416,72 @@ def create_sphere_with_id(user_id: str, sphere_name: str, description: str = "")
     return query, {"user_id": user_id, "sphere_name": sphere_name, "description": description}
 
 
-def update_sphere_description(sphere_id: str, description: str) -> tuple[str, dict]:
+def get_spheres_with_scores_data(user_id: str) -> tuple[str, dict]:
+    """Get all non-archived spheres with elementId for compass focus selection."""
     query = """
-    MATCH (s:Sphere)
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE NOT coalesce(s.archived, false)
+    RETURN elementId(s) AS id, s.name AS name
+    ORDER BY s.created_at
+    """
+    return query, {"user_id": user_id}
+
+
+def get_recent_weight_changes_detailed(user_id: str, limit: int = 10) -> tuple[str, dict]:
+    """Get recent weight changes with full detail for key shift detection."""
+    query = """
+    MATCH (wl:WeightLog {user_id: $user_id})
+    RETURN wl.from_label AS from_label, wl.from_name AS from_name,
+           wl.to_label AS to_label, wl.to_name AS to_name,
+           wl.edge_type AS edge_type,
+           wl.old_weight AS old_weight, wl.new_weight AS new_weight,
+           wl.delta AS delta, wl.created_at AS created_at
+    ORDER BY wl.created_at DESC
+    LIMIT $limit
+    """
+    return query, {"user_id": user_id, "limit": limit}
+
+
+def create_action_feedback(
+    user_id: str, status: str, one_move: str, sphere_name: str,
+) -> tuple[str, dict]:
+    """Save one-move feedback as ActionFeedback node."""
+    query = """
+    CREATE (af:ActionFeedback {
+        user_id: $user_id,
+        status: $status,
+        one_move: $one_move,
+        sphere_name: $sphere_name,
+        created_at: datetime()
+    })
+    RETURN af
+    """
+    return query, {
+        "user_id": user_id,
+        "status": status,
+        "one_move": one_move,
+        "sphere_name": sphere_name,
+    }
+
+
+def get_recent_action_feedback(user_id: str, limit: int = 1) -> tuple[str, dict]:
+    """Get most recent action feedback to avoid duplicate submissions."""
+    query = """
+    MATCH (af:ActionFeedback {user_id: $user_id})
+    RETURN af.status AS status, af.one_move AS one_move,
+           af.sphere_name AS sphere_name, af.created_at AS created_at
+    ORDER BY af.created_at DESC
+    LIMIT $limit
+    """
+    return query, {"user_id": user_id, "limit": limit}
+
+
+def update_sphere_description(user_id: str, sphere_id: str, description: str) -> tuple[str, dict]:
+    """Ownership-safe description update."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
     WHERE elementId(s) = $sphere_id
     SET s.description = $description, s.updated_at = datetime()
     RETURN elementId(s) AS id, s.name AS name, s.description AS description
     """
-    return query, {"sphere_id": sphere_id, "description": description}
+    return query, {"user_id": user_id, "sphere_id": sphere_id, "description": description}

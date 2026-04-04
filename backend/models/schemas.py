@@ -120,6 +120,79 @@ class SphereMessageResponse(BaseModel):
     score_delta: float | None = None
 
 
+class FocusSphere(BaseModel):
+    id: str
+    name: str
+    score: float = 0.0
+
+
+class ActionTrace(BaseModel):
+    status: str = ""  # "done" | "not_done"
+    message: str = ""
+    sphere_name: str = ""
+
+
+class DailyCompass(BaseModel):
+    daily_state: str = ""
+    daily_state_reason: str = ""
+    key_shift_title: str = ""
+    key_shift_reason: str = ""
+    focus_sphere: FocusSphere | None = None
+    one_move: str = ""
+    one_move_reason: str = ""
+    cost_of_ignoring: str = ""
+    last_action_trace: ActionTrace | None = None
+
+
+class OneMoveFeedback(BaseModel):
+    user_id: str
+    status: str  # "done" | "not_done"
+    one_move: str = ""
+    sphere_name: str = ""
+
+
+class OneMoveFeedbackResponse(BaseModel):
+    status: str
+    message: str
+    score_impact: float = 0.0
+
+
+class PredictionQuery(BaseModel):
+    user_id: str
+    question: str
+    sphere_id: str | None = None
+
+
+class PredictionInfluencer(BaseModel):
+    type: str = ""       # "blocker" | "pattern" | "goal" | "value" | "action_feedback"
+    name: str = ""
+    detail: str = ""
+
+
+class PredictionScenario(BaseModel):
+    label: str = ""      # "most_likely" | "alternative"
+    title: str = ""
+    description: str = ""
+
+
+class PredictionSource(BaseModel):
+    title: str = ""
+    url: str = ""
+    domain: str = ""
+
+
+class PredictionResponse(BaseModel):
+    question_type: str = ""         # decision | trajectory | change_impact | relationship | pattern_risk
+    restated_question: str = ""
+    summary: str = ""
+    influencers: list[PredictionInfluencer] = Field(default_factory=list)
+    external_insights: str = ""
+    scenarios: list[PredictionScenario] = Field(default_factory=list)
+    depends_on: str = ""
+    next_step: str = ""
+    sources: list[PredictionSource] = Field(default_factory=list)
+
+
 class APIResponse(BaseModel):
     success: bool
     data: dict | None = None

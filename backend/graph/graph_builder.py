@@ -139,18 +139,18 @@ class GraphBuilder:
             return None
         return rows[0]
 
-    async def rename_sphere(self, sphere_id: str, new_name: str) -> dict | None:
-        rows = await self._run(*graph_queries.rename_sphere(sphere_id, new_name))
+    async def rename_sphere(self, user_id: str, sphere_id: str, new_name: str) -> dict | None:
+        rows = await self._run(*graph_queries.rename_sphere(user_id, sphere_id, new_name))
         return rows[0] if rows else None
 
-    async def archive_sphere(self, sphere_id: str) -> bool:
-        rows = await self._run(*graph_queries.archive_sphere(sphere_id))
+    async def archive_sphere(self, user_id: str, sphere_id: str) -> bool:
+        rows = await self._run(*graph_queries.archive_sphere(user_id, sphere_id))
         return bool(rows)
 
     async def get_related_spheres(self, user_id: str, sphere_id: str) -> list[str]:
         rows = await self._run(*graph_queries.get_related_spheres(user_id, sphere_id))
         return [r["name"] for r in rows]
 
-    async def update_sphere_description(self, sphere_id: str, description: str) -> dict | None:
-        rows = await self._run(*graph_queries.update_sphere_description(sphere_id, description))
+    async def update_sphere_description(self, user_id: str, sphere_id: str, description: str) -> dict | None:
+        rows = await self._run(*graph_queries.update_sphere_description(user_id, sphere_id, description))
         return rows[0] if rows else None

@@ -20,6 +20,10 @@ python-jose[cryptography]==3.3.0
 # Memory
 zep-cloud>=2.0.0
 
+# Search
+ddgs>=7.0.0
+beautifulsoup4>=4.12.0
+
 # Phase 2
 # pinecone-client==5.0.1
 # supabase>=2.0.0
