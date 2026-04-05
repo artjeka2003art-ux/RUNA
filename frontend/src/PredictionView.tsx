@@ -1,12 +1,331 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   sendWorkspaceQuery,
+  getSpheres,
   type WorkspaceResult,
   type ScenarioReport,
   type ContextCompleteness,
   type ScenarioComparison,
   type LeverageFactor,
+  type MissingContextItem,
 } from "./api";
+
+// ── Workspace state persistence ──
+
+const WS_STORAGE_KEY = "runa_workspace_state";
+
+interface WorkspaceState {
+  question: string;
+  variants: string[];
+  result: WorkspaceResult | null;
+  timestamp: number;
+}
+
+function saveWorkspaceState(state: WorkspaceState) {
+  try {
+    sessionStorage.setItem(WS_STORAGE_KEY, JSON.stringify(state));
+  } catch { /* quota exceeded */ }
+}
+
+function loadWorkspaceState(): WorkspaceState | null {
+  try {
+    const raw = sessionStorage.getItem(WS_STORAGE_KEY);
+    if (!raw) return null;
+    const state = JSON.parse(raw) as WorkspaceState;
+    if (Date.now() - state.timestamp > 30 * 60 * 1000) {
+      sessionStorage.removeItem(WS_STORAGE_KEY);
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+// ── Sphere matching ──
+
+interface SphereRef {
+  id: string;
+  name: string;
+}
+
+/** Common Russian sphere synonyms/aliases → canonical tokens */
+const SPHERE_SYNONYMS: Record<string, string[]> = {
+  "финанс":    ["деньги", "бюджет", "доход", "зарплата", "накопления", "подушка", "финансов"],
+  "карьер":    ["работа", "профессия", "должность", "рост", "повышение", "компания", "офис"],
+  "здоровь":   ["спорт", "режим", "сон", "тело", "медицин", "врач", "болезн"],
+  "отношени":  ["партнёр", "партнер", "семья", "любовь", "брак", "близкие", "друзья", "социальн"],
+  "образован": ["учёба", "учеба", "магистратура", "курс", "обучени", "навык"],
+  "проект":    ["стартап", "бизнес", "запуск", "свой", "предприниматель"],
+  "эмоцион":   ["психолог", "терапи", "ментальн", "выгоран", "стресс", "тревог"],
+  "семь":      ["дети", "ребёнок", "ребенок", "родители", "мама", "папа"],
+};
+
+function normalize(s: string): string {
+  return s.toLowerCase().trim().replace(/[ёЁ]/g, "е");
+}
+
+function tokenize(s: string): string[] {
+  return normalize(s).split(/[\s,.\-—/]+/).filter((t) => t.length > 1);
+}
+
+function matchSphereScore(hint: string, sphereName: string): number {
+  const hNorm = normalize(hint);
+  const sNorm = normalize(sphereName);
+
+  // Exact match
+  if (hNorm === sNorm) return 1.0;
+
+  // Contains
+  if (sNorm.includes(hNorm) || hNorm.includes(sNorm)) return 0.85;
+
+  // Token overlap
+  const hTokens = tokenize(hint);
+  const sTokens = tokenize(sphereName);
+  if (hTokens.length > 0 && sTokens.length > 0) {
+    let overlap = 0;
+    for (const ht of hTokens) {
+      for (const st of sTokens) {
+        if (st.includes(ht) || ht.includes(st)) {
+          overlap++;
+          break;
+        }
+      }
+    }
+    const tokenScore = overlap / Math.max(hTokens.length, sTokens.length);
+    if (tokenScore >= 0.5) return 0.6 + tokenScore * 0.2;
+  }
+
+  // Synonym match: check if hint tokens match any synonym group that also matches sphere tokens
+  for (const [root, aliases] of Object.entries(SPHERE_SYNONYMS)) {
+    const allTerms = [root, ...aliases];
+    const hintMatchesSynonym = allTerms.some((t) => hNorm.includes(t));
+    const sphereMatchesSynonym = allTerms.some((t) => sNorm.includes(t));
+    if (hintMatchesSynonym && sphereMatchesSynonym) return 0.7;
+  }
+
+  return 0;
+}
+
+function findBestSphere(hint: string, spheres: SphereRef[]): string | null {
+  if (!hint || spheres.length === 0) return null;
+
+  let bestId: string | null = null;
+  let bestScore = 0;
+
+  for (const s of spheres) {
+    const score = matchSphereScore(hint, s.name);
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = s.id;
+    }
+  }
+
+  // Only return if confident enough
+  return bestScore >= 0.5 ? bestId : null;
+}
+
+// ── Prediction diff ──
+
+interface DiffItem {
+  type: "positive" | "negative" | "neutral";
+  text: string;
+}
+
+const CONF_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2 };
+
+/** Match a report from prev results by label — exact, then token overlap, then positional fallback */
+function matchReport(reports: ScenarioReport[], label: string): ScenarioReport | undefined {
+  const norm = normalize(label);
+  // Exact normalized match
+  const exact = reports.find((r) => normalize(r.variant_label) === norm);
+  if (exact) return exact;
+  // Token overlap: if >50% tokens match
+  const labelTokens = tokenize(label);
+  if (labelTokens.length > 0) {
+    let bestScore = 0;
+    let bestReport: ScenarioReport | undefined;
+    for (const r of reports) {
+      const rTokens = tokenize(r.variant_label);
+      let overlap = 0;
+      for (const lt of labelTokens) {
+        if (rTokens.some((rt) => rt.includes(lt) || lt.includes(rt))) overlap++;
+      }
+      const score = overlap / Math.max(labelTokens.length, rTokens.length);
+      if (score > bestScore && score >= 0.4) {
+        bestScore = score;
+        bestReport = r;
+      }
+    }
+    if (bestReport) return bestReport;
+  }
+  return undefined;
+}
+
+function computeDiff(prev: WorkspaceResult, next: WorkspaceResult): DiffItem[] {
+  const items: DiffItem[] = [];
+
+  // Context completeness change
+  const prevConf = prev.context_completeness?.score || "low";
+  const nextConf = next.context_completeness?.score || "low";
+  if (prevConf !== nextConf) {
+    const improved = (CONF_ORDER[nextConf] ?? 0) > (CONF_ORDER[prevConf] ?? 0);
+    items.push({
+      type: improved ? "positive" : "negative",
+      text: `Полнота контекста: ${CONFIDENCE_LABELS[prevConf]} → ${CONFIDENCE_LABELS[nextConf]}`,
+    });
+  }
+
+  // New known factors
+  const prevKnown = new Set((prev.context_completeness?.known_factors || []).map(normalize));
+  const newKnown = (next.context_completeness?.known_factors || []).filter(
+    (f) => !prevKnown.has(normalize(f)),
+  );
+  if (newKnown.length > 0) {
+    items.push({
+      type: "positive",
+      text: `Стало известно больше: ${newKnown.join(", ")}`,
+    });
+  }
+
+  // Missing context count
+  const prevMissing = prev.context_completeness?.missing?.length ?? 0;
+  const nextMissing = next.context_completeness?.missing?.length ?? 0;
+  if (nextMissing < prevMissing) {
+    items.push({
+      type: "positive",
+      text: `Пробелов стало меньше: ${prevMissing} → ${nextMissing}`,
+    });
+  } else if (nextMissing > prevMissing) {
+    items.push({
+      type: "neutral",
+      text: `Обнаружены новые пробелы контекста: ${prevMissing} → ${nextMissing}`,
+    });
+  }
+
+  // Per-scenario confidence changes (with fuzzy label matching)
+  for (const nextReport of next.reports) {
+    const prevReport = matchReport(prev.reports, nextReport.variant_label);
+    if (!prevReport) continue;
+
+    const pConf = prevReport.confidence || "low";
+    const nConf = nextReport.confidence || "low";
+    if (pConf !== nConf) {
+      const improved = (CONF_ORDER[nConf] ?? 0) > (CONF_ORDER[pConf] ?? 0);
+      items.push({
+        type: improved ? "positive" : "negative",
+        text: `«${nextReport.variant_label}»: confidence ${CONFIDENCE_LABELS[pConf]} → ${CONFIDENCE_LABELS[nConf]}`,
+      });
+    }
+
+    // New risks
+    const prevRisks = new Set(prevReport.main_risks?.map(normalize) || []);
+    const newRisks = (nextReport.main_risks || []).filter((r) => !prevRisks.has(normalize(r)));
+    if (newRisks.length > 0) {
+      items.push({
+        type: "neutral",
+        text: `«${nextReport.variant_label}»: новые риски — ${newRisks.join("; ")}`,
+      });
+    }
+
+    // Removed risks
+    const nextRisks = new Set(nextReport.main_risks?.map(normalize) || []);
+    const goneRisks = (prevReport.main_risks || []).filter((r) => !nextRisks.has(normalize(r)));
+    if (goneRisks.length > 0) {
+      items.push({
+        type: "positive",
+        text: `«${nextReport.variant_label}»: снятые риски — ${goneRisks.join("; ")}`,
+      });
+    }
+
+    // Leverage factor changes
+    const prevLF = new Set(prevReport.leverage_factors?.map((f) => normalize(f.factor)) || []);
+    const newLF = (nextReport.leverage_factors || []).filter((f) => !prevLF.has(normalize(f.factor)));
+    if (newLF.length > 0) {
+      items.push({
+        type: "neutral",
+        text: `«${nextReport.variant_label}»: новые ключевые факторы — ${newLF.map((f) => f.factor).join(", ")}`,
+      });
+    }
+  }
+
+  // Comparison changes
+  if (prev.comparison && next.comparison) {
+    if (prev.comparison.safest_variant !== next.comparison.safest_variant &&
+        next.comparison.safest_variant) {
+      items.push({
+        type: "neutral",
+        text: `Самый безопасный вариант изменился: «${next.comparison.safest_variant}»`,
+      });
+    }
+    if (prev.comparison.most_sensitive_factor !== next.comparison.most_sensitive_factor &&
+        next.comparison.most_sensitive_factor) {
+      items.push({
+        type: "neutral",
+        text: `Самый чувствительный фактор теперь: ${next.comparison.most_sensitive_factor}`,
+      });
+    }
+  }
+
+  if (items.length === 0) {
+    items.push({ type: "neutral", text: "Существенных изменений не обнаружено." });
+  }
+
+  // Generate causal explanation based on what changed
+  const cause = inferProbableCause(prev, next, items);
+  if (cause) {
+    items.unshift({ type: "positive", text: cause });
+  }
+
+  return items;
+}
+
+/** Infer a human-readable probable cause for prediction improvement */
+function inferProbableCause(prev: WorkspaceResult, next: WorkspaceResult, items: DiffItem[]): string | null {
+  const prevKnown = prev.context_completeness?.known_factors || [];
+  const nextKnown = next.context_completeness?.known_factors || [];
+  const newKnown = nextKnown.filter((f) => !prevKnown.map(normalize).includes(normalize(f)));
+
+  const prevMissing = prev.context_completeness?.missing?.length ?? 0;
+  const nextMissing = next.context_completeness?.missing?.length ?? 0;
+  const missingReduced = prevMissing > nextMissing;
+
+  const prevConf = CONF_ORDER[prev.context_completeness?.score || "low"] ?? 0;
+  const nextConf = CONF_ORDER[next.context_completeness?.score || "low"] ?? 0;
+  const confImproved = nextConf > prevConf;
+
+  // Build cause string
+  if (newKnown.length > 0 && confImproved) {
+    return `Вероятная причина улучшения: добавлены данные — ${newKnown.slice(0, 3).join(", ")}`;
+  }
+  if (newKnown.length > 0) {
+    return `Прогноз обновлён с учётом новых факторов: ${newKnown.slice(0, 3).join(", ")}`;
+  }
+  if (missingReduced && confImproved) {
+    return "Прогноз стал увереннее — заполнены ранее недостающие данные";
+  }
+  if (confImproved) {
+    return "Прогноз стал увереннее после обновления контекста";
+  }
+  if (missingReduced) {
+    return "Пробелов стало меньше — контекст стал полнее";
+  }
+
+  // Check if risks changed significantly
+  const hasPositive = items.some((i) => i.type === "positive" && i.text.includes("риски"));
+  if (hasPositive) {
+    return "Оценка рисков изменилась после обновления контекста";
+  }
+
+  return null;
+}
+
+// ── Constants ──
+
+interface WorkspaceSphereContext {
+  missingWhat: string;
+  missingWhy: string;
+}
 
 const TYPE_LABELS: Record<string, string> = {
   decision: "Решение",
@@ -34,51 +353,131 @@ const WEIGHT_LABELS: Record<string, string> = {
   low: "Слабое",
 };
 
-export default function PredictionView({ userId }: { userId: string }) {
+// ── Main component ──
+
+interface PredictionViewProps {
+  userId: string;
+  onNavigateToSphere?: (sphereId: string, ctx: WorkspaceSphereContext) => void;
+  returnedFromSphere?: boolean;
+  onClearReturned?: () => void;
+}
+
+export default function PredictionView({
+  userId,
+  onNavigateToSphere,
+  returnedFromSphere,
+  onClearReturned,
+}: PredictionViewProps) {
   const [question, setQuestion] = useState("");
   const [variants, setVariants] = useState<string[]>([""]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<WorkspaceResult | null>(null);
+  const [prevResult, setPrevResult] = useState<WorkspaceResult | null>(null);
+  const [diff, setDiff] = useState<DiffItem[] | null>(null);
+  const [spheres, setSpheres] = useState<SphereRef[]>([]);
+  const [contextUpdated, setContextUpdated] = useState(false);
 
-  function addVariant() {
-    setVariants((v) => [...v, ""]);
-  }
+  // Load spheres
+  useEffect(() => {
+    getSpheres(userId).then((res) => {
+      if (res.success && res.data?.spheres) {
+        setSpheres(res.data.spheres.map((s: { id: string; name: string }) => ({
+          id: s.id,
+          name: s.name,
+        })));
+      }
+    }).catch(() => {});
+  }, [userId]);
 
-  function removeVariant(index: number) {
-    setVariants((v) => v.filter((_, i) => i !== index));
-  }
+  // Restore from sessionStorage
+  useEffect(() => {
+    const saved = loadWorkspaceState();
+    if (saved) {
+      setQuestion(saved.question);
+      setVariants(saved.variants.length > 0 ? saved.variants : [""]);
+      setResult(saved.result);
+    }
+  }, []);
 
-  function updateVariant(index: number, value: string) {
-    setVariants((v) => v.map((item, i) => (i === index ? value : item)));
-  }
+  // Show re-run banner only when truly returned from sphere
+  useEffect(() => {
+    if (returnedFromSphere && result) {
+      setContextUpdated(true);
+      onClearReturned?.();
+    }
+  }, [returnedFromSphere]);
+
+  // Persist
+  const persistState = useCallback(() => {
+    if (question.trim()) {
+      saveWorkspaceState({ question, variants, result, timestamp: Date.now() });
+    }
+  }, [question, variants, result]);
+
+  useEffect(() => { persistState(); }, [persistState]);
+
+  function addVariant() { setVariants((v) => [...v, ""]); }
+  function removeVariant(i: number) { setVariants((v) => v.filter((_, idx) => idx !== i)); }
+  function updateVariant(i: number, val: string) { setVariants((v) => v.map((x, idx) => idx === i ? val : x)); }
 
   async function handleAnalyze() {
     const q = question.trim();
     if (!q || loading) return;
+
+    // Capture previous result for diff before clearing
+    const snapshotPrev = result;
+
     setLoading(true);
     setResult(null);
+    setDiff(null);
+    setContextUpdated(false);
     try {
       const res = await sendWorkspaceQuery(userId, q, variants);
       if (res.success && res.data) {
-        setResult(res.data as WorkspaceResult);
+        const newResult = res.data as WorkspaceResult;
+        setResult(newResult);
+        if (snapshotPrev) {
+          setPrevResult(snapshotPrev);
+          setDiff(computeDiff(snapshotPrev, newResult));
+        }
       }
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
     setLoading(false);
+  }
+
+  function findSphereId(hint: string): string | null {
+    return findBestSphere(hint, spheres);
+  }
+
+  function handleMissingContextClick(item: MissingContextItem) {
+    if (!onNavigateToSphere || !item.sphere_hint) return;
+    const sphereId = findSphereId(item.sphere_hint);
+    if (!sphereId) return;
+    persistState();
+    onNavigateToSphere(sphereId, {
+      missingWhat: item.what,
+      missingWhy: item.why_important,
+    });
   }
 
   return (
     <div className="ws-view">
-      {/* Header */}
       <div className="ws-header">
         <h2>Decision Workspace</h2>
-        <p className="ws-subtitle">
-          Смоделируй варианты решения и сравни последствия
-        </p>
+        <p className="ws-subtitle">Смоделируй варианты решения и сравни последствия</p>
       </div>
 
-      {/* Question Input */}
+      {/* Context updated banner */}
+      {contextUpdated && result && (
+        <div className="ws-updated-banner">
+          <span>Контекст мог измениться. Пересчитай прогноз для актуального результата.</span>
+          <button className="ws-rerun-btn" onClick={handleAnalyze} disabled={loading}>
+            Пересчитать прогноз
+          </button>
+        </div>
+      )}
+
+      {/* Question */}
       <div className="ws-section">
         <label className="ws-label">Твой вопрос</label>
         <input
@@ -87,20 +486,15 @@ export default function PredictionView({ userId }: { userId: string }) {
           placeholder="Что будет, если я...?"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleAnalyze();
-          }}
+          onKeyDown={(e) => { if (e.key === "Enter") handleAnalyze(); }}
           disabled={loading}
         />
       </div>
 
-      {/* Scenario Variants Editor */}
+      {/* Variants */}
       <div className="ws-section">
         <label className="ws-label">Варианты сценариев</label>
-        <p className="ws-hint">
-          Добавь варианты для сравнения. Если оставить пустым — система
-          предложит свои.
-        </p>
+        <p className="ws-hint">Добавь варианты для сравнения. Если оставить пустым — система предложит свои.</p>
         <div className="ws-variants">
           {variants.map((v, i) => (
             <div key={i} className="ws-variant-row">
@@ -114,37 +508,22 @@ export default function PredictionView({ userId }: { userId: string }) {
                 disabled={loading}
               />
               {variants.length > 1 && (
-                <button
-                  className="ws-variant-remove"
-                  onClick={() => removeVariant(i)}
-                  disabled={loading}
-                  title="Удалить"
-                >
+                <button className="ws-variant-remove" onClick={() => removeVariant(i)} disabled={loading} title="Удалить">
                   &times;
                 </button>
               )}
             </div>
           ))}
-          <button
-            className="ws-variant-add"
-            onClick={addVariant}
-            disabled={loading}
-          >
+          <button className="ws-variant-add" onClick={addVariant} disabled={loading}>
             + Добавить вариант
           </button>
         </div>
       </div>
 
-      {/* Run button */}
-      <button
-        className="ws-run-btn"
-        onClick={handleAnalyze}
-        disabled={loading || !question.trim()}
-      >
-        {loading ? "Анализирую сценарии..." : "Запустить анализ"}
+      <button className="ws-run-btn" onClick={handleAnalyze} disabled={loading || !question.trim()}>
+        {loading ? "Анализирую сценарии..." : result ? "Пересчитать прогноз" : "Запустить анализ"}
       </button>
 
-      {/* Loading */}
       {loading && (
         <div className="ws-loading">
           <div className="spinner" />
@@ -153,8 +532,11 @@ export default function PredictionView({ userId }: { userId: string }) {
       )}
 
       {/* Results */}
-      {result && (
+      {result && !loading && (
         <div className="ws-results">
+          {/* Diff block — shown after re-run */}
+          {diff && diff.length > 0 && <DiffBlock items={diff} />}
+
           {/* Type + restated question */}
           <div className="ws-result-header">
             <span className="ws-type-badge">
@@ -165,10 +547,12 @@ export default function PredictionView({ userId }: { userId: string }) {
             )}
           </div>
 
-          {/* Context Completeness */}
-          <ContextCompletenessBlock data={result.context_completeness} />
+          <ContextCompletenessBlock
+            data={result.context_completeness}
+            onMissingClick={handleMissingContextClick}
+            findSphereId={findSphereId}
+          />
 
-          {/* Scenario Reports */}
           {result.reports.length > 0 && (
             <div className="ws-block">
               <h3 className="ws-block-title">Сценарии</h3>
@@ -180,12 +564,10 @@ export default function PredictionView({ userId }: { userId: string }) {
             </div>
           )}
 
-          {/* Comparison */}
           {result.comparison && result.reports.length > 1 && (
             <ComparisonBlock data={result.comparison} />
           )}
 
-          {/* External Insights */}
           {result.external_insights && (
             <div className="ws-block">
               <h3 className="ws-block-title">Что говорят источники</h3>
@@ -193,19 +575,12 @@ export default function PredictionView({ userId }: { userId: string }) {
             </div>
           )}
 
-          {/* Sources */}
           {result.sources?.length > 0 && (
             <div className="ws-block">
               <h3 className="ws-block-title">Источники</h3>
               <div className="ws-sources">
                 {result.sources.map((s, i) => (
-                  <a
-                    key={i}
-                    className="ws-source"
-                    href={s.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
+                  <a key={i} className="ws-source" href={s.url} target="_blank" rel="noopener noreferrer">
                     <span className="ws-source-domain">{s.domain}</span>
                     <span className="ws-source-title">{s.title}</span>
                   </a>
@@ -219,9 +594,51 @@ export default function PredictionView({ userId }: { userId: string }) {
   );
 }
 
-/* ── Sub-components ── */
+/* ── Diff Block ── */
 
-function ContextCompletenessBlock({ data }: { data: ContextCompleteness }) {
+const DIFF_ICONS: Record<string, string> = {
+  positive: "+",
+  negative: "−",
+  neutral: "~",
+};
+
+function DiffBlock({ items }: { items: DiffItem[] }) {
+  // First item may be the causal explanation — render it prominently
+  const hasCause = items.length > 1 && (items[0].text.startsWith("Вероятная причина") || items[0].text.startsWith("Прогноз") || items[0].text.startsWith("Пробелов") || items[0].text.startsWith("Оценка"));
+  const causeItem = hasCause ? items[0] : null;
+  const restItems = hasCause ? items.slice(1) : items;
+
+  return (
+    <div className="ws-block ws-diff-block">
+      <h3 className="ws-block-title">Что изменилось после обновления контекста</h3>
+      {causeItem && (
+        <div className="ws-diff-cause">
+          <span className="ws-diff-cause-text">{causeItem.text}</span>
+        </div>
+      )}
+      <div className="ws-diff-list">
+        {restItems.map((item, i) => (
+          <div key={i} className={`ws-diff-item ws-diff-${item.type}`}>
+            <span className="ws-diff-icon">{DIFF_ICONS[item.type]}</span>
+            <span className="ws-diff-text">{item.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Context Completeness ── */
+
+function ContextCompletenessBlock({
+  data,
+  onMissingClick,
+  findSphereId,
+}: {
+  data: ContextCompleteness;
+  onMissingClick: (item: MissingContextItem) => void;
+  findSphereId: (hint: string) => string | null;
+}) {
   if (!data) return null;
   const color = CONFIDENCE_COLORS[data.score] || CONFIDENCE_COLORS.low;
 
@@ -249,15 +666,27 @@ function ContextCompletenessBlock({ data }: { data: ContextCompleteness }) {
         <div className="ws-context-missing">
           <span className="ws-mini-label">Чего не хватает:</span>
           <div className="ws-missing-list">
-            {data.missing.map((m, i) => (
-              <div key={i} className="ws-missing-item">
-                <div className="ws-missing-what">{m.what}</div>
-                <div className="ws-missing-why">{m.why_important}</div>
-                {m.sphere_hint && (
-                  <span className="ws-missing-sphere">{m.sphere_hint}</span>
-                )}
-              </div>
-            ))}
+            {data.missing.map((m, i) => {
+              const hasLink = m.sphere_hint && findSphereId(m.sphere_hint);
+              return (
+                <div key={i} className="ws-missing-item">
+                  <div className="ws-missing-what">{m.what}</div>
+                  <div className="ws-missing-why">{m.why_important}</div>
+                  {m.sphere_hint && (
+                    hasLink ? (
+                      <button
+                        className="ws-missing-sphere ws-missing-sphere-link"
+                        onClick={() => onMissingClick(m)}
+                      >
+                        Перейти в сферу: {m.sphere_hint} &rarr;
+                      </button>
+                    ) : (
+                      <span className="ws-missing-sphere">{m.sphere_hint}</span>
+                    )
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -265,72 +694,52 @@ function ContextCompletenessBlock({ data }: { data: ContextCompleteness }) {
   );
 }
 
+/* ── Report Card ── */
+
 function ReportCard({ report }: { report: ScenarioReport }) {
   const confColor = CONFIDENCE_COLORS[report.confidence] || CONFIDENCE_COLORS.low;
-
   return (
     <div className="ws-report-card">
       <div className="ws-report-head">
         <div className="ws-report-label">{report.variant_label}</div>
-        <span
-          className="ws-confidence-badge"
-          style={{ color: confColor, borderColor: confColor }}
-        >
+        <span className="ws-confidence-badge" style={{ color: confColor, borderColor: confColor }}>
           {CONFIDENCE_LABELS[report.confidence] || report.confidence}
         </span>
       </div>
-
-      {/* Most likely outcome */}
       <div className="ws-report-section">
         <span className="ws-mini-label">Наиболее вероятный исход</span>
         <p className="ws-text">{report.most_likely_outcome}</p>
       </div>
-
-      {/* Alternative */}
       {report.alternative_outcome && (
         <div className="ws-report-section">
           <span className="ws-mini-label">Альтернативный исход</span>
           <p className="ws-text ws-text-muted">{report.alternative_outcome}</p>
         </div>
       )}
-
-      {/* Risks */}
       {report.main_risks?.length > 0 && (
         <div className="ws-report-section">
           <span className="ws-mini-label">Основные риски</span>
           <ul className="ws-risk-list">
-            {report.main_risks.map((r, i) => (
-              <li key={i}>{r}</li>
-            ))}
+            {report.main_risks.map((r, i) => (<li key={i}>{r}</li>))}
           </ul>
         </div>
       )}
-
-      {/* Leverage factors */}
       {report.leverage_factors?.length > 0 && (
         <div className="ws-report-section">
           <span className="ws-mini-label">Что сильнее всего меняет исход</span>
           <div className="ws-leverage-list">
-            {report.leverage_factors.map((lf, i) => (
-              <LeverageFactorTag key={i} data={lf} />
-            ))}
+            {report.leverage_factors.map((lf, i) => (<LeverageFactorTag key={i} data={lf} />))}
           </div>
         </div>
       )}
-
-      {/* Affected spheres */}
       {report.affected_spheres?.length > 0 && (
         <div className="ws-report-section">
           <span className="ws-mini-label">Затронутые сферы</span>
           <div className="ws-tag-list">
-            {report.affected_spheres.map((s, i) => (
-              <span key={i} className="ws-tag">{s}</span>
-            ))}
+            {report.affected_spheres.map((s, i) => (<span key={i} className="ws-tag">{s}</span>))}
           </div>
         </div>
       )}
-
-      {/* Next step */}
       {report.next_step && (
         <div className="ws-report-next">
           <span className="ws-mini-label">Следующий шаг</span>
@@ -342,8 +751,7 @@ function ReportCard({ report }: { report: ScenarioReport }) {
 }
 
 function LeverageFactorTag({ data }: { data: LeverageFactor }) {
-  const weightColor =
-    data.weight === "high" ? "#ef4444" : data.weight === "medium" ? "#f59e0b" : "#71717a";
+  const weightColor = data.weight === "high" ? "#ef4444" : data.weight === "medium" ? "#f59e0b" : "#71717a";
   return (
     <div className="ws-leverage-item">
       <span className="ws-leverage-factor">{data.factor}</span>
@@ -359,20 +767,15 @@ function ComparisonBlock({ data }: { data: ScenarioComparison }) {
   return (
     <div className="ws-block ws-comparison-block">
       <h3 className="ws-block-title">Сравнение сценариев</h3>
-
       {data.summary && <p className="ws-text">{data.summary}</p>}
-
       {data.key_tradeoffs?.length > 0 && (
         <div className="ws-comp-section">
           <span className="ws-mini-label">Ключевые trade-offs</span>
           <ul className="ws-tradeoff-list">
-            {data.key_tradeoffs.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
+            {data.key_tradeoffs.map((t, i) => (<li key={i}>{t}</li>))}
           </ul>
         </div>
       )}
-
       <div className="ws-comp-grid">
         {data.safest_variant && (
           <div className="ws-comp-cell">

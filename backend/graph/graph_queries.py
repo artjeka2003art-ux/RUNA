@@ -476,6 +476,18 @@ def get_recent_action_feedback(user_id: str, limit: int = 1) -> tuple[str, dict]
     return query, {"user_id": user_id, "limit": limit}
 
 
+def get_spheres_with_descriptions(user_id: str) -> tuple[str, dict]:
+    """Get all non-archived spheres with descriptions for prediction context."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE NOT coalesce(s.archived, false)
+    RETURN elementId(s) AS id, s.name AS name,
+           coalesce(s.description, '') AS description
+    ORDER BY s.created_at
+    """
+    return query, {"user_id": user_id}
+
+
 def update_sphere_description(user_id: str, sphere_id: str, description: str) -> tuple[str, dict]:
     """Ownership-safe description update."""
     query = """

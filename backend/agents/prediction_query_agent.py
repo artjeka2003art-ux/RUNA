@@ -6,10 +6,13 @@ knowledge, and returns a structured prediction response.
 
 import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from backend.constants import AI_MODEL
 from backend.graph.neo4j_client import Neo4jClient
@@ -32,6 +35,87 @@ _BOILERPLATE_PATTERNS = re.compile(
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "prediction_query_prompt.txt"
 _WORKSPACE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "workspace_synthesis_prompt.txt"
 
+# ── Sphere relevance scoring ────────────────────────────────────────
+
+_SPHERE_SYNONYMS: dict[str, list[str]] = {
+    "финанс": ["деньги", "бюджет", "доход", "зарплата", "накопления", "подушка"],
+    "карьер": ["работа", "профессия", "должность", "рост", "повышение", "компания", "офис", "увольн"],
+    "здоровь": ["спорт", "режим", "сон", "тело", "медицин", "врач", "болезн"],
+    "отношени": ["партнёр", "партнер", "семья", "любовь", "брак", "близкие", "друзья", "социальн"],
+    "образован": ["учёба", "учеба", "магистратура", "курс", "обучени", "навык"],
+    "проект": ["стартап", "бизнес", "запуск", "предприниматель"],
+    "эмоцион": ["психолог", "терапи", "ментальн", "выгоран", "стресс", "тревог"],
+    "семь": ["дети", "ребёнок", "ребенок", "родители", "мама", "папа"],
+}
+
+_MAX_RELEVANT_SPHERES = 4
+
+
+def _normalize(s: str) -> str:
+    return s.lower().replace("ё", "е").strip()
+
+
+def _tokenize(s: str) -> list[str]:
+    return [t for t in re.split(r"[\s,.\-—/]+", _normalize(s)) if len(t) > 1]
+
+
+def _sphere_relevance(sphere_name: str, sphere_desc: str, question: str, variants: list[str]) -> float:
+    """Score sphere relevance to question+variants. Returns 0.0-1.0."""
+    query_text = _normalize(question + " " + " ".join(variants))
+    s_name = _normalize(sphere_name)
+    s_desc = _normalize(sphere_desc)
+
+    # Direct mention of sphere name in query
+    if s_name in query_text:
+        return 1.0
+
+    # Token overlap
+    q_tokens = _tokenize(query_text)
+    s_tokens = _tokenize(sphere_name + " " + sphere_desc)
+    if not q_tokens:
+        return 0.1
+
+    overlap = 0
+    for qt in q_tokens:
+        for st in s_tokens:
+            if st in qt or qt in st:
+                overlap += 1
+                break
+
+    token_score = overlap / max(len(q_tokens), 1)
+
+    # Synonym boost
+    synonym_score = 0.0
+    for root, aliases in _SPHERE_SYNONYMS.items():
+        all_terms = [root] + aliases
+        query_hit = any(t in query_text for t in all_terms)
+        sphere_hit = any((t in s_name or t in s_desc) for t in all_terms)
+        if query_hit and sphere_hit:
+            synonym_score = 0.6
+            break
+
+    return min(1.0, max(token_score * 0.8, synonym_score))
+
+
+def _select_relevant_spheres(
+    spheres: list[dict], question: str, variants: list[str],
+) -> list[dict]:
+    """Return top relevant spheres sorted by score. Always returns at least 1 if any exist."""
+    if not spheres:
+        return []
+    scored = []
+    for s in spheres:
+        score = _sphere_relevance(s["name"], s.get("description", ""), question, variants)
+        scored.append((score, s))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Take spheres with score > 0.15, but always at least top 1, max _MAX_RELEVANT_SPHERES
+    relevant = [s for sc, s in scored if sc > 0.15][:_MAX_RELEVANT_SPHERES]
+    if not relevant and scored:
+        relevant = [scored[0][1]]
+    return relevant
+
+
 _QUESTION_TYPES = {
     "decision": "Вопрос о конкретном выборе / решении",
     "trajectory": "Вопрос о текущей траектории / к чему ведёт",
@@ -49,9 +133,17 @@ decision, trajectory, change_impact, relationship, pattern_risk
 
 
 class PredictionQueryAgent:
-    def __init__(self, ai_client, graph_client: Neo4jClient):
+    def __init__(
+        self,
+        ai_client,
+        graph_client: Neo4jClient,
+        session_store=None,
+        zep_client=None,
+    ):
         self.ai = ai_client
         self.graph = graph_client
+        self.sessions = session_store
+        self.zep = zep_client
         self._prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
         self._workspace_prompt_template = _WORKSPACE_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -66,7 +158,7 @@ class PredictionQueryAgent:
         """Full prediction pipeline: classify → context → search → synthesize."""
 
         question_type = await self._classify_question(question)
-        personal_context = await self._gather_context(user_id, sphere_id, question)
+        personal_context, _ = await self._gather_context(user_id, sphere_id, question)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize(
@@ -99,17 +191,47 @@ class PredictionQueryAgent:
 
     async def _gather_context(
         self, user_id: str, sphere_id: str | None, question: str,
+        variants: list[str] | None = None,
     ) -> str:
         parts: list[str] = []
 
+        # Sphere list with descriptions
+        all_spheres: list[dict] = []  # [{id, name, description}]
         try:
-            q, p = graph_queries.get_spheres_with_ids(user_id)
+            q, p = graph_queries.get_spheres_with_descriptions(user_id)
             rows = await self.graph.execute_query(q, p)
             if rows:
-                parts.append(f"Сферы жизни: {', '.join(r['name'] for r in rows)}")
+                all_spheres = [{"id": r["id"], "name": r["name"], "description": r.get("description", "")} for r in rows]
         except Exception:
-            pass
+            logger.warning("Failed to fetch spheres for user %s", user_id, exc_info=True)
 
+        # Select only relevant spheres for this question
+        relevant_spheres = _select_relevant_spheres(all_spheres, question, variants or [])
+
+        # Ensure focused sphere is always included
+        if sphere_id:
+            focused_ids = {s["id"] for s in relevant_spheres}
+            if sphere_id not in focused_ids:
+                focused = next((s for s in all_spheres if s["id"] == sphere_id), None)
+                if focused:
+                    relevant_spheres.insert(0, focused)
+
+        # Always list all sphere names for context awareness, but mark relevant ones
+        if all_spheres:
+            relevant_names = {s["name"] for s in relevant_spheres}
+            sphere_lines = []
+            for s in all_spheres:
+                marker = " ★" if s["name"] in relevant_names else ""
+                line = s["name"] + marker
+                if s["description"]:
+                    line += f" — {s['description']}"
+                sphere_lines.append(line)
+            parts.append("Сферы жизни (★ = релевантные для вопроса):\n" + "\n".join(f"  - {l}" for l in sphere_lines))
+
+        # Use relevant_spheres for detailed context gathering
+        context_spheres = relevant_spheres
+
+        # Focused sphere detail
         if sphere_id:
             try:
                 q, p = graph_queries.get_sphere_detail(user_id, sphere_id)
@@ -122,20 +244,24 @@ class PredictionQueryAgent:
                             labels = node.get("labels", [])
                             parts.append(f"  {labels[0] if labels else '?'}: {node.get('name','')} (вес {node.get('weight',0):.2f})")
             except Exception:
-                pass
+                logger.warning("Failed to fetch sphere detail %s", sphere_id, exc_info=True)
 
+        # Graph entities: blockers, patterns, goals, values
         for label, cypher_label in [("Блокеры", "Blocker"), ("Паттерны", "Pattern")]:
             try:
                 q = f"""
                 MATCH (n:{cypher_label} {{user_id: $uid}})-[r]->(s:Sphere {{user_id: $uid}})
-                RETURN n.name AS name, s.name AS sphere, r.weight AS weight
+                RETURN n.name AS name, n.description AS desc, s.name AS sphere, r.weight AS weight
                 ORDER BY r.weight DESC LIMIT 5
                 """
                 rows = await self.graph.execute_query(q, {"uid": user_id})
                 if rows:
                     parts.append(f"\n{label}:")
                     for r in rows:
-                        parts.append(f"  - {r['name']} → {r['sphere']} (вес {r.get('weight',0):.2f})")
+                        line = f"  - {r['name']} → {r['sphere']} (вес {r.get('weight',0):.2f})"
+                        if r.get("desc"):
+                            line += f" — {r['desc'][:80]}"
+                        parts.append(line)
             except Exception:
                 pass
 
@@ -143,17 +269,21 @@ class PredictionQueryAgent:
             try:
                 q = f"""
                 MATCH (n:{ntype} {{user_id: $uid}})-[r]->(s:Sphere {{user_id: $uid}})
-                RETURN n.name AS name, s.name AS sphere, r.weight AS weight
+                RETURN n.name AS name, n.description AS desc, s.name AS sphere, r.weight AS weight
                 ORDER BY r.weight DESC LIMIT 3
                 """
                 rows = await self.graph.execute_query(q, {"uid": user_id})
                 if rows:
                     parts.append(f"\n{ntype}s:")
                     for r in rows:
-                        parts.append(f"  - {r['name']} → {r['sphere']} (вес {r.get('weight',0):.2f})")
+                        line = f"  - {r['name']} → {r['sphere']} (вес {r.get('weight',0):.2f})"
+                        if r.get("desc"):
+                            line += f" — {r['desc'][:80]}"
+                        parts.append(line)
             except Exception:
                 pass
 
+        # Recent checkins
         try:
             q, p = graph_queries.get_recent_checkins(user_id, limit=3)
             rows = await self.graph.execute_query(q, p)
@@ -164,6 +294,7 @@ class PredictionQueryAgent:
         except Exception:
             pass
 
+        # Recent action feedback
         try:
             q, p = graph_queries.get_recent_action_feedback(user_id, limit=3)
             rows = await self.graph.execute_query(q, p)
@@ -174,6 +305,7 @@ class PredictionQueryAgent:
         except Exception:
             pass
 
+        # Recent weight changes
         try:
             q, p = graph_queries.get_recent_weight_changes_detailed(user_id, limit=5)
             rows = await self.graph.execute_query(q, p)
@@ -185,7 +317,99 @@ class PredictionQueryAgent:
         except Exception:
             pass
 
-        return "\n".join(parts) if parts else "Контекст пока минимален."
+        # Sphere chat context: compact digests from Redis sessions
+        sphere_chat_context = await self._gather_sphere_chat_context(user_id, context_spheres, question)
+        if sphere_chat_context:
+            parts.append(sphere_chat_context)
+
+        # Zep long-term memory facts (if available)
+        zep_context = await self._gather_zep_context(user_id, context_spheres)
+        if zep_context:
+            parts.append(zep_context)
+
+        context = "\n".join(parts) if parts else "Контекст пока минимален."
+        return context, [s["name"] for s in context_spheres]
+
+    async def _gather_context_with_spheres(
+        self, user_id: str, sphere_id: str | None, question: str,
+        variants: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        """Wrapper that returns (context_text, used_sphere_names)."""
+        return await self._gather_context(user_id, sphere_id, question, variants)
+
+    async def _gather_sphere_chat_context(
+        self, user_id: str, sphere_ids: list[dict], question: str,
+    ) -> str:
+        """Build compact sphere digests from Redis chat sessions.
+
+        Instead of raw messages, produces a structured digest per sphere:
+        name, description, key user facts (deduplicated, truncated).
+        """
+        if not self.sessions or not sphere_ids:
+            return ""
+
+        digests: list[str] = []
+
+        for s in sphere_ids:
+            session_key = f"sphere-{user_id}-{s['id']}"
+            try:
+                history = await self.sessions.get_session(session_key)
+                if not history:
+                    continue
+                # Extract user messages only
+                user_msgs = [m["content"] for m in history if m.get("role") == "user"]
+                if not user_msgs:
+                    continue
+
+                # Build compact digest
+                digest_lines = [f"  【{s['name']}】"]
+                if s.get("description"):
+                    digest_lines.append(f"    Описание: {s['description'][:120]}")
+
+                # Deduplicate and pick last 4 most informative messages (>20 chars)
+                seen = set()
+                facts = []
+                for msg in reversed(user_msgs):
+                    short = msg[:200].strip()
+                    norm = _normalize(short)
+                    if len(norm) < 15 or norm in seen:
+                        continue
+                    seen.add(norm)
+                    facts.append(short)
+                    if len(facts) >= 4:
+                        break
+
+                if facts:
+                    digest_lines.append("    Факты от пользователя:")
+                    for f in reversed(facts):
+                        digest_lines.append(f"      • {f[:150]}")
+
+                digests.append("\n".join(digest_lines))
+            except Exception:
+                continue
+
+        if not digests:
+            return ""
+        return "\nДайджест релевантных сфер:\n" + "\n".join(digests)
+
+    async def _gather_zep_context(self, user_id: str, sphere_ids: list[dict]) -> str:
+        """Pull Zep long-term facts for relevant spheres (if Zep is connected)."""
+        if not self.zep or not sphere_ids:
+            return ""
+
+        facts: list[str] = []
+        for s in sphere_ids[:5]:  # limit to 5 spheres
+            thread_id = f"sphere-{user_id}-{s['id']}"
+            try:
+                ctx = await self.zep.get_user_context(user_id, thread_id)
+                if ctx and len(ctx.strip()) > 10:
+                    facts.append(f"  «{s['name']}»: {ctx[:200]}")
+            except Exception:
+                continue
+
+        if not facts:
+            return ""
+        return "\nДолгосрочная память по сферам:\n" + "\n".join(facts)
 
     # ── Step 3: External knowledge retrieval ──────────────────────────
 
@@ -492,18 +716,20 @@ class PredictionQueryAgent:
         """Decision Workspace pipeline: classify → context → search → multi-scenario synthesis."""
 
         question_type = await self._classify_question(question)
-        personal_context = await self._gather_context(user_id, sphere_id, question)
-        external_context, sources = await self._search_external(question, question_type)
 
-        # Auto-generate variants if user didn't provide them
+        # Auto-generate variants early so they inform context selection
         if not variants:
             variants = await self._generate_variants(question, question_type)
+
+        personal_context, used_sphere_names = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+        external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize_workspace(
             question, question_type, personal_context, external_context, variants,
         )
 
         result["question"] = question
+        result["context_spheres_used"] = used_sphere_names
         result["question_type"] = question_type
         result["variants"] = variants
         result["sources"] = sources
@@ -562,7 +788,8 @@ class PredictionQueryAgent:
             if start != -1 and end != -1:
                 raw = raw[start:end + 1]
             return json.loads(raw)
-        except (json.JSONDecodeError, Exception):
+        except Exception:
+            logger.warning("Workspace synthesis failed", exc_info=True)
             return {
                 "restated_question": question,
                 "context_completeness": {"score": "low", "known_factors": [], "missing": []},

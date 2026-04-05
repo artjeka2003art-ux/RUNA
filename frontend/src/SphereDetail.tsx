@@ -26,14 +26,20 @@ interface Msg {
   graphUpdates?: { weights_updated: number; nodes_created: number; resolved: number };
 }
 
+interface WorkspaceSphereContext {
+  missingWhat: string;
+  missingWhy: string;
+}
+
 interface SphereDetailProps {
   userId: string;
   sphereId: string;
   intro?: string | null;
   onBack: () => void;
+  workspaceContext?: WorkspaceSphereContext | null;
 }
 
-export default function SphereDetail({ userId, sphereId, intro, onBack }: SphereDetailProps) {
+export default function SphereDetail({ userId, sphereId, intro, onBack, workspaceContext }: SphereDetailProps) {
   const [sphere, setSphere] = useState<SphereData | null>(null);
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<Msg[]>(() =>
@@ -141,9 +147,25 @@ export default function SphereDetail({ userId, sphereId, intro, onBack }: Sphere
 
   return (
     <div className="sphere-detail">
+      {/* Workspace context banner */}
+      {workspaceContext && (
+        <div className="sphere-ws-banner">
+          <div className="sphere-ws-banner-label">Из Decision Workspace</div>
+          <div className="sphere-ws-banner-what">
+            Нужно добавить: <strong>{workspaceContext.missingWhat}</strong>
+          </div>
+          <div className="sphere-ws-banner-why">{workspaceContext.missingWhy}</div>
+          <button className="sphere-ws-banner-back" onClick={onBack}>
+            &larr; Вернуться в Workspace
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="sphere-detail-header">
-        <button className="sphere-back-btn" onClick={onBack}>&larr; Life Map</button>
+        <button className="sphere-back-btn" onClick={onBack}>
+          &larr; {workspaceContext ? "Decision Workspace" : "Life Map"}
+        </button>
 
         <div className="sphere-detail-title-row">
           {renaming ? (

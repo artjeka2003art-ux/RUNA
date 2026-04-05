@@ -18,6 +18,9 @@ function getUserId(): string {
 
 type Tab = "today" | "lifemap" | "path" | "onboarding" | "reveal" | "sphere-detail" | "checkin";
 
+/** Where to return after leaving sphere-detail */
+type SphereOrigin = "lifemap" | "workspace";
+
 const NAV_ITEMS: { id: Tab; label: string }[] = [
   { id: "today", label: "Today" },
   { id: "lifemap", label: "Life Map" },
@@ -29,6 +32,12 @@ export interface RevealData {
   lifeScore: number;
 }
 
+/** Context passed from workspace to sphere detail */
+export interface WorkspaceSphereContext {
+  missingWhat: string;
+  missingWhy: string;
+}
+
 function App() {
   const userId = getUserId();
   const [tab, setTab] = useState<Tab>(() =>
@@ -38,6 +47,9 @@ function App() {
   const [revealData, setRevealData] = useState<RevealData | null>(null);
   const [selectedSphereId, setSelectedSphereId] = useState<string | null>(null);
   const [sphereIntro, setSphereIntro] = useState<string | null>(null);
+  const [sphereOrigin, setSphereOrigin] = useState<SphereOrigin>("lifemap");
+  const [workspaceSphereCtx, setWorkspaceSphereCtx] = useState<WorkspaceSphereContext | null>(null);
+  const [returnedFromSphere, setReturnedFromSphere] = useState(false);
 
   function handleOnboardingComplete(data?: RevealData) {
     localStorage.setItem("runa_onboarded", "true");
@@ -58,14 +70,35 @@ function App() {
   function handleOpenSphere(sphereId: string, intro?: string) {
     setSelectedSphereId(sphereId);
     setSphereIntro(intro || null);
+    setSphereOrigin("lifemap");
+    setWorkspaceSphereCtx(null);
+    setTab("sphere-detail");
+  }
+
+  /** Called from workspace when user clicks a missing-context sphere hint */
+  function handleOpenSphereFromWorkspace(
+    sphereId: string,
+    ctx: WorkspaceSphereContext,
+  ) {
+    setSelectedSphereId(sphereId);
+    setSphereIntro(null);
+    setSphereOrigin("workspace");
+    setWorkspaceSphereCtx(ctx);
     setTab("sphere-detail");
   }
 
   function handleBackFromSphere() {
+    const origin = sphereOrigin;
     setSelectedSphereId(null);
     setSphereIntro(null);
-    setRefreshKey((k) => k + 1);
-    setTab("lifemap");
+    setWorkspaceSphereCtx(null);
+    if (origin === "workspace") {
+      setReturnedFromSphere(true);
+      setTab("path");
+    } else {
+      setRefreshKey((k) => k + 1);
+      setTab("lifemap");
+    }
   }
 
   const switchTab = useCallback((t: Tab) => {
@@ -128,13 +161,21 @@ function App() {
         {tab === "lifemap" && (
           <LifeMap key={refreshKey} userId={userId} onOpenSphere={handleOpenSphere} />
         )}
-        {tab === "path" && <PredictionView userId={userId} />}
+        {tab === "path" && (
+          <PredictionView
+            userId={userId}
+            onNavigateToSphere={handleOpenSphereFromWorkspace}
+            returnedFromSphere={returnedFromSphere}
+            onClearReturned={() => setReturnedFromSphere(false)}
+          />
+        )}
         {tab === "sphere-detail" && selectedSphereId && (
           <SphereDetail
             userId={userId}
             sphereId={selectedSphereId}
             intro={sphereIntro}
             onBack={handleBackFromSphere}
+            workspaceContext={workspaceSphereCtx}
           />
         )}
       </main>

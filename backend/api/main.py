@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     analyst_agent = AnalystAgent(ai_client, neo4j, graph_builder)
     scenario_agent = ScenarioAgent(ai_client, neo4j)
     sphere_agent = SphereAgent(ai_client, neo4j, session_store, zep_client)
-    prediction_query_agent = PredictionQueryAgent(ai_client, neo4j)
+    prediction_query_agent = PredictionQueryAgent(ai_client, neo4j, session_store, zep_client)
 
     # Make available to routes
     app.state.neo4j = neo4j
