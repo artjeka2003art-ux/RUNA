@@ -16,6 +16,7 @@ from backend.agents.scenario_agent import ScenarioAgent
 from backend.agents.sphere_agent import SphereAgent
 from backend.agents.prediction_query_agent import PredictionQueryAgent
 from backend.scoring.life_score_engine import LifeScoreEngine
+from backend.services.document_service import DocumentStore
 
 
 @asynccontextmanager
@@ -63,10 +64,12 @@ async def lifespan(app: FastAPI):
     analyst_agent = AnalystAgent(ai_client, neo4j, graph_builder)
     scenario_agent = ScenarioAgent(ai_client, neo4j)
     sphere_agent = SphereAgent(ai_client, neo4j, session_store, zep_client)
-    prediction_query_agent = PredictionQueryAgent(ai_client, neo4j, session_store, zep_client)
+    document_store = DocumentStore(session_store)
+    prediction_query_agent = PredictionQueryAgent(ai_client, neo4j, session_store, zep_client, document_store)
 
     # Make available to routes
     app.state.neo4j = neo4j
+    app.state.document_store = document_store
     app.state.graph_builder = graph_builder
     app.state.session_store = session_store
     app.state.conversation_agent = conversation_agent

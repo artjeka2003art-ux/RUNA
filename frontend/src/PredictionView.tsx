@@ -575,6 +575,21 @@ export default function PredictionView({
             </div>
           )}
 
+          {/* Context transparency */}
+          {(result.context_spheres_used?.length || result.documents_used?.length) ? (
+            <div className="ws-block ws-context-used">
+              <h3 className="ws-block-title">Использованный контекст</h3>
+              <div className="ws-context-tags">
+                {result.context_spheres_used?.map((s, i) => (
+                  <span key={`s-${i}`} className="ws-tag ws-tag-sphere">{s}</span>
+                ))}
+                {result.documents_used?.map((d, i) => (
+                  <span key={`d-${i}`} className="ws-tag ws-tag-doc">{d}</span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {result.sources?.length > 0 && (
             <div className="ws-block">
               <h3 className="ws-block-title">Источники</h3>
@@ -706,6 +721,14 @@ function ReportCard({ report }: { report: ScenarioReport }) {
           {CONFIDENCE_LABELS[report.confidence] || report.confidence}
         </span>
       </div>
+
+      {/* Decision signal — top-level verdict */}
+      {report.decision_signal && (
+        <div className="ws-report-signal">
+          {report.decision_signal}
+        </div>
+      )}
+
       <div className="ws-report-section">
         <span className="ws-mini-label">Наиболее вероятный исход</span>
         <p className="ws-text">{report.most_likely_outcome}</p>
@@ -716,6 +739,33 @@ function ReportCard({ report }: { report: ScenarioReport }) {
           <p className="ws-text ws-text-muted">{report.alternative_outcome}</p>
         </div>
       )}
+
+      {/* Sharp analysis fields */}
+      {report.primary_bottleneck && (
+        <div className="ws-report-section ws-report-sharp">
+          <span className="ws-mini-label ws-label-bottleneck">Главный bottleneck</span>
+          <p className="ws-text">{report.primary_bottleneck}</p>
+        </div>
+      )}
+      {report.dominant_downside && (
+        <div className="ws-report-section ws-report-sharp">
+          <span className="ws-mini-label ws-label-downside">Скрытая цена</span>
+          <p className="ws-text">{report.dominant_downside}</p>
+        </div>
+      )}
+      {report.non_obvious_insight && (
+        <div className="ws-report-section ws-report-insight">
+          <span className="ws-mini-label ws-label-insight">Неочевидное</span>
+          <p className="ws-text">{report.non_obvious_insight}</p>
+        </div>
+      )}
+      {report.condition_that_changes_prediction && (
+        <div className="ws-report-section ws-report-sharp">
+          <span className="ws-mini-label">При каком условии прогноз меняется</span>
+          <p className="ws-text ws-text-muted">{report.condition_that_changes_prediction}</p>
+        </div>
+      )}
+
       {report.main_risks?.length > 0 && (
         <div className="ws-report-section">
           <span className="ws-mini-label">Основные риски</span>
@@ -767,13 +817,19 @@ function ComparisonBlock({ data }: { data: ScenarioComparison }) {
   return (
     <div className="ws-block ws-comparison-block">
       <h3 className="ws-block-title">Сравнение сценариев</h3>
-      {data.summary && <p className="ws-text">{data.summary}</p>}
+      {data.summary && <p className="ws-text ws-comp-summary">{data.summary}</p>}
       {data.key_tradeoffs?.length > 0 && (
         <div className="ws-comp-section">
           <span className="ws-mini-label">Ключевые trade-offs</span>
           <ul className="ws-tradeoff-list">
             {data.key_tradeoffs.map((t, i) => (<li key={i}>{t}</li>))}
           </ul>
+        </div>
+      )}
+      {data.hidden_trap && (
+        <div className="ws-comp-section ws-comp-trap">
+          <span className="ws-mini-label ws-label-downside">Ловушка</span>
+          <p className="ws-text">{data.hidden_trap}</p>
         </div>
       )}
       <div className="ws-comp-grid">
@@ -793,6 +849,12 @@ function ComparisonBlock({ data }: { data: ScenarioComparison }) {
           <div className="ws-comp-cell ws-comp-cell-full">
             <span className="ws-mini-label">Самый чувствительный фактор</span>
             <span className="ws-comp-value ws-comp-factor">{data.most_sensitive_factor}</span>
+          </div>
+        )}
+        {data.ranking_variable && (
+          <div className="ws-comp-cell ws-comp-cell-full">
+            <span className="ws-mini-label">Что нужно узнать для окончательного выбора</span>
+            <span className="ws-comp-value">{data.ranking_variable}</span>
           </div>
         )}
       </div>

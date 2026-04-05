@@ -254,6 +254,11 @@ class ScenarioReport(BaseModel):
     alternative_outcome: str = ""
     main_risks: list[str] = Field(default_factory=list)
     leverage_factors: list[LeverageFactor] = Field(default_factory=list)
+    primary_bottleneck: str = ""
+    dominant_downside: str = ""
+    non_obvious_insight: str = ""
+    condition_that_changes_prediction: str = ""
+    decision_signal: str = ""
     confidence: ConfidenceLevel = ConfidenceLevel.low
     confidence_reason: str = ""
     affected_spheres: list[str] = Field(default_factory=list)
@@ -268,6 +273,8 @@ class ScenarioComparison(BaseModel):
     safest_variant: str = ""
     highest_upside_variant: str = ""
     most_sensitive_factor: str = ""
+    hidden_trap: str = ""
+    ranking_variable: str = ""
 
 
 # --- Workspace response ---

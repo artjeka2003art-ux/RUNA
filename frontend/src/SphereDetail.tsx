@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef } from "react";
-import { getSphereDetail, sendSphereMessage, renameSphere, deleteSphere } from "./api";
+import {
+  getSphereDetail,
+  sendSphereMessage,
+  renameSphere,
+  deleteSphere,
+  getSphereDocuments,
+  uploadSphereDocument,
+  deleteSphereDocument,
+  type SphereDocument,
+} from "./api";
 
 interface RelatedNode {
   type: string;
@@ -49,10 +58,14 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   const [sending, setSending] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [docs, setDocs] = useState<SphereDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadSphere();
+    loadDocs();
   }, [userId, sphereId]);
 
   useEffect(() => {
@@ -99,6 +112,34 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
       ]);
     }
     setSending(false);
+  }
+
+  async function loadDocs() {
+    const res = await getSphereDocuments(userId, sphereId);
+    if (res.success && res.data?.documents) {
+      setDocs(res.data.documents);
+    }
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await uploadSphereDocument(userId, sphereId, file);
+      if (res.success) {
+        await loadDocs();
+      }
+    } catch { /* ignore */ }
+    setUploading(false);
+    if (fileInput.current) fileInput.current.value = "";
+  }
+
+  async function handleDeleteDoc(docId: string) {
+    const res = await deleteSphereDocument(userId, sphereId, docId);
+    if (res.success) {
+      setDocs((d) => d.filter((doc) => doc.id !== docId));
+    }
   }
 
   async function handleRename() {
@@ -275,6 +316,45 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
             <p>Эта сфера пока пуста. Расскажи о ней в чате ниже — Runa начнёт строить картину.</p>
           </div>
         )}
+
+        {/* Documents */}
+        <div className="sphere-docs">
+          <div className="sphere-docs-header">
+            <h3 className="sphere-docs-title">Документы</h3>
+            <label className={`sphere-docs-upload-btn${uploading ? " disabled" : ""}`}>
+              {uploading ? "Загрузка..." : "+ Добавить"}
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".pdf,.docx,.txt"
+                onChange={handleUpload}
+                disabled={uploading}
+                hidden
+              />
+            </label>
+          </div>
+          {docs.length === 0 ? (
+            <p className="sphere-docs-hint">
+              Добавь документы (резюме, оффер, контракт, бюджет) — это усилит точность прогноза. Необязательно.
+            </p>
+          ) : (
+            <div className="sphere-docs-list">
+              {docs.map((d) => (
+                <div key={d.id} className="sphere-doc-item">
+                  <span className="sphere-doc-name">{d.filename}</span>
+                  <span className={`sphere-doc-status sphere-doc-status-${d.status}`}>
+                    {d.status === "processed" ? "Обработан" :
+                     d.status === "limited" ? "Частично" :
+                     d.status === "failed" ? "Ошибка" : d.status}
+                  </span>
+                  <button className="sphere-doc-delete" onClick={() => handleDeleteDoc(d.id)} title="Удалить">
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Sphere Chat */}
         <div className="sphere-chat">

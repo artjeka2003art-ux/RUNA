@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, UploadFile, File, Form
 
 from backend.models.schemas import (
     APIResponse,
@@ -6,6 +6,7 @@ from backend.models.schemas import (
     SphereRename,
     SphereMessageRequest,
 )
+from backend.services.document_service import detect_mime, extract_text
 
 router = APIRouter(prefix="/spheres", tags=["spheres"])
 
@@ -243,3 +244,78 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
         })
     except Exception as e:
         return APIResponse(success=False, error=str(e))
+
+
+# ── Document endpoints ──────────────────────────────────────────────
+
+
+@router.post("/{sphere_id}/documents", response_model=APIResponse)
+async def upload_document(
+    sphere_id: str,
+    request: Request,
+    user_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a document to a sphere. Extracts text for prediction context."""
+    doc_store = request.app.state.document_store
+
+    mime = file.content_type or detect_mime(file.filename or "")
+    if not mime or mime not in {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+    }:
+        return APIResponse(success=False, error="Формат не поддерживается. Поддерживаются: PDF, DOCX, TXT")
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        return APIResponse(success=False, error="Файл слишком большой (макс. 10 МБ)")
+
+    extracted, status = extract_text(content, mime)
+    doc = await doc_store.save_document(
+        user_id=user_id,
+        sphere_id=sphere_id,
+        filename=file.filename or "unnamed",
+        mime_type=mime,
+        extracted_text=extracted,
+        status=status,
+    )
+
+    return APIResponse(success=True, data={
+        "document": {
+            "id": doc["id"],
+            "filename": doc["filename"],
+            "status": doc["status"],
+            "text_length": len(extracted),
+            "uploaded_at": doc["uploaded_at"],
+        }
+    })
+
+
+@router.get("/{sphere_id}/documents", response_model=APIResponse)
+async def list_documents(sphere_id: str, user_id: str, request: Request):
+    """List all documents attached to a sphere."""
+    doc_store = request.app.state.document_store
+    docs = await doc_store.get_documents(user_id, sphere_id)
+    return APIResponse(success=True, data={
+        "documents": [
+            {
+                "id": d["id"],
+                "filename": d["filename"],
+                "status": d["status"],
+                "text_length": len(d.get("extracted_text", "")),
+                "uploaded_at": d["uploaded_at"],
+            }
+            for d in docs
+        ]
+    })
+
+
+@router.delete("/{sphere_id}/documents/{doc_id}", response_model=APIResponse)
+async def delete_document(sphere_id: str, doc_id: str, user_id: str, request: Request):
+    """Delete a document from a sphere."""
+    doc_store = request.app.state.document_store
+    ok = await doc_store.delete_document(user_id, sphere_id, doc_id)
+    if not ok:
+        return APIResponse(success=False, error="Документ не найден")
+    return APIResponse(success=True, data={"deleted": True})

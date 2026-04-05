@@ -139,11 +139,13 @@ class PredictionQueryAgent:
         graph_client: Neo4jClient,
         session_store=None,
         zep_client=None,
+        document_store=None,
     ):
         self.ai = ai_client
         self.graph = graph_client
         self.sessions = session_store
         self.zep = zep_client
+        self.docs = document_store
         self._prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
         self._workspace_prompt_template = _WORKSPACE_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -158,7 +160,7 @@ class PredictionQueryAgent:
         """Full prediction pipeline: classify → context → search → synthesize."""
 
         question_type = await self._classify_question(question)
-        personal_context, _ = await self._gather_context(user_id, sphere_id, question)
+        personal_context, _, _ = await self._gather_context(user_id, sphere_id, question)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize(
@@ -216,17 +218,23 @@ class PredictionQueryAgent:
                 if focused:
                     relevant_spheres.insert(0, focused)
 
-        # Always list all sphere names for context awareness, but mark relevant ones
+        # Show relevant spheres in detail, others just as names
         if all_spheres:
             relevant_names = {s["name"] for s in relevant_spheres}
-            sphere_lines = []
+            rel_lines = []
+            other_names = []
             for s in all_spheres:
-                marker = " ★" if s["name"] in relevant_names else ""
-                line = s["name"] + marker
-                if s["description"]:
-                    line += f" — {s['description']}"
-                sphere_lines.append(line)
-            parts.append("Сферы жизни (★ = релевантные для вопроса):\n" + "\n".join(f"  - {l}" for l in sphere_lines))
+                if s["name"] in relevant_names:
+                    line = s["name"]
+                    if s["description"]:
+                        line += f" — {s['description']}"
+                    rel_lines.append(line)
+                else:
+                    other_names.append(s["name"])
+            header = "Релевантные сферы для этого вопроса:\n" + "\n".join(f"  - {l}" for l in rel_lines)
+            if other_names:
+                header += f"\nДругие сферы ({len(other_names)}): {', '.join(other_names)}"
+            parts.append(header)
 
         # Use relevant_spheres for detailed context gathering
         context_spheres = relevant_spheres
@@ -327,14 +335,21 @@ class PredictionQueryAgent:
         if zep_context:
             parts.append(zep_context)
 
+        # Document context from uploaded files
+        doc_context, doc_names = await self._gather_document_context(
+            user_id, context_spheres, question, variants or [],
+        )
+        if doc_context:
+            parts.append(doc_context)
+
         context = "\n".join(parts) if parts else "Контекст пока минимален."
-        return context, [s["name"] for s in context_spheres]
+        return context, [s["name"] for s in context_spheres], doc_names
 
     async def _gather_context_with_spheres(
         self, user_id: str, sphere_id: str | None, question: str,
         variants: list[str] | None = None,
-    ) -> tuple[str, list[str]]:
-        """Wrapper that returns (context_text, used_sphere_names)."""
+    ) -> tuple[str, list[str], list[str]]:
+        """Wrapper that returns (context_text, used_sphere_names, used_doc_names)."""
         return await self._gather_context(user_id, sphere_id, question, variants)
 
     async def _gather_sphere_chat_context(
@@ -366,18 +381,24 @@ class PredictionQueryAgent:
                 if s.get("description"):
                     digest_lines.append(f"    Описание: {s['description'][:120]}")
 
-                # Deduplicate and pick last 4 most informative messages (>20 chars)
+                # Deduplicate, score by question relevance, pick top 4
+                q_tokens = _tokenize(question)
                 seen = set()
-                facts = []
+                scored_facts: list[tuple[float, str]] = []
                 for msg in reversed(user_msgs):
                     short = msg[:200].strip()
                     norm = _normalize(short)
                     if len(norm) < 15 or norm in seen:
                         continue
                     seen.add(norm)
-                    facts.append(short)
-                    if len(facts) >= 4:
-                        break
+                    # Score: token overlap with question gives priority
+                    overlap = sum(1 for t in q_tokens if t in norm) if q_tokens else 0
+                    score = overlap / max(len(q_tokens), 1) + 0.01  # tiny base so all are orderable
+                    scored_facts.append((score, short))
+
+                # Sort by relevance, take top 4
+                scored_facts.sort(key=lambda x: x[0], reverse=True)
+                facts = [text for _, text in scored_facts[:4]]
 
                 if facts:
                     digest_lines.append("    Факты от пользователя:")
@@ -410,6 +431,52 @@ class PredictionQueryAgent:
         if not facts:
             return ""
         return "\nДолгосрочная память по сферам:\n" + "\n".join(facts)
+
+    async def _gather_document_context(
+        self,
+        user_id: str,
+        context_spheres: list[dict],
+        question: str,
+        variants: list[str],
+    ) -> tuple[str, list[str]]:
+        """Pull extracted text from sphere documents. Returns (context_str, doc_filenames)."""
+        if not self.docs or not context_spheres:
+            return "", []
+
+        q_tokens = _tokenize(question + " " + " ".join(variants))
+        doc_parts: list[str] = []
+        doc_names: list[str] = []
+
+        for s in context_spheres:
+            try:
+                docs = await self.docs.get_documents(user_id, s["id"])
+                if not docs:
+                    continue
+                for doc in docs:
+                    if doc.get("status") not in ("processed", "limited"):
+                        continue
+                    text = doc.get("extracted_text", "")
+                    if len(text) < 20:
+                        continue
+
+                    # Question-aware: score relevance of doc text to question
+                    doc_lower = _normalize(text[:2000])
+                    relevance = sum(1 for t in q_tokens if t in doc_lower) / max(len(q_tokens), 1)
+
+                    # Include doc if any relevance or sphere is explicitly relevant
+                    excerpt = text[:800] if relevance > 0.1 else text[:400]
+                    status_note = " (частично извлечён)" if doc["status"] == "limited" else ""
+                    doc_parts.append(
+                        f"  📄 {doc['filename']}{status_note} [{s['name']}]:\n    {excerpt}"
+                    )
+                    doc_names.append(doc["filename"])
+            except Exception:
+                logger.warning("Failed to fetch docs for sphere %s", s["id"], exc_info=True)
+                continue
+
+        if not doc_parts:
+            return "", []
+        return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names
 
     # ── Step 3: External knowledge retrieval ──────────────────────────
 
@@ -721,7 +788,7 @@ class PredictionQueryAgent:
         if not variants:
             variants = await self._generate_variants(question, question_type)
 
-        personal_context, used_sphere_names = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+        personal_context, used_sphere_names, used_doc_names = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize_workspace(
@@ -730,6 +797,7 @@ class PredictionQueryAgent:
 
         result["question"] = question
         result["context_spheres_used"] = used_sphere_names
+        result["documents_used"] = used_doc_names
         result["question_type"] = question_type
         result["variants"] = variants
         result["sources"] = sources
@@ -779,7 +847,7 @@ class PredictionQueryAgent:
             resp = await self.ai.chat.completions.create(
                 model=AI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=3000,
+                max_tokens=4000,
                 temperature=0.4,
             )
             raw = resp.choices[0].message.content.strip()

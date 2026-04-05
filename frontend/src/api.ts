@@ -107,6 +107,11 @@ export interface ScenarioReport {
   alternative_outcome: string;
   main_risks: string[];
   leverage_factors: LeverageFactor[];
+  primary_bottleneck: string;
+  dominant_downside: string;
+  non_obvious_insight: string;
+  condition_that_changes_prediction: string;
+  decision_signal: string;
   confidence: "low" | "medium" | "high";
   confidence_reason: string;
   affected_spheres: string[];
@@ -120,6 +125,8 @@ export interface ScenarioComparison {
   safest_variant: string;
   highest_upside_variant: string;
   most_sensitive_factor: string;
+  hidden_trap: string;
+  ranking_variable: string;
 }
 
 export interface WorkspaceResult {
@@ -132,6 +139,8 @@ export interface WorkspaceResult {
   comparison: ScenarioComparison | null;
   external_insights: string;
   sources: { title: string; url: string; domain: string }[];
+  context_spheres_used?: string[];
+  documents_used?: string[];
 }
 
 export async function sendWorkspaceQuery(
@@ -195,6 +204,39 @@ export async function sendSphereMessage(userId: string, sphereId: string, messag
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, message }),
+  });
+  return res.json();
+}
+
+// ── Sphere Documents ──
+
+export interface SphereDocument {
+  id: string;
+  filename: string;
+  status: "uploaded" | "processed" | "failed" | "limited";
+  text_length: number;
+  uploaded_at: string;
+}
+
+export async function getSphereDocuments(userId: string, sphereId: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}/documents?user_id=${userId}`);
+  return res.json();
+}
+
+export async function uploadSphereDocument(userId: string, sphereId: string, file: File) {
+  const form = new FormData();
+  form.append("user_id", userId);
+  form.append("file", file);
+  const res = await fetch(`${BASE}/spheres/${sphereId}/documents`, {
+    method: "POST",
+    body: form,
+  });
+  return res.json();
+}
+
+export async function deleteSphereDocument(userId: string, sphereId: string, docId: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}/documents/${docId}?user_id=${userId}`, {
+    method: "DELETE",
   });
   return res.json();
 }
