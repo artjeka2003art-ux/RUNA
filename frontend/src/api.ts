@@ -247,6 +247,33 @@ export async function createSphere(userId: string, name: string) {
   return res.json();
 }
 
+export async function getEnrichmentPrompts(
+  sphereName: string,
+  missingWhat: string,
+  missingWhy: string,
+  question: string,
+  allMissing: string[],
+): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${BASE}/spheres/enrichment-prompts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sphere_name: sphereName,
+        missing_what: missingWhat,
+        missing_why: missingWhy,
+        question,
+        all_missing: allMissing,
+      }),
+    });
+    const data = await res.json();
+    if (data.success && data.data?.prompts) return data.data.prompts;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function renameSphere(userId: string, sphereId: string, name: string) {
   const res = await fetch(`${BASE}/spheres/${sphereId}`, {
     method: "PATCH",

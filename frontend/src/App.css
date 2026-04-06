@@ -1640,14 +1640,107 @@
   border-left: 3px solid #3b82f6;
 }
 
+/* Current leader */
+.ws-comp-leader {
+  padding: 16px;
+  background: rgba(59,130,246,0.06);
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+.ws-comp-leader-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ws-comp-leader-label {
+  font-size: 12px;
+  color: #a1a1aa;
+}
+.ws-comp-leader-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #93c5fd;
+}
+.ws-comp-leader-conf {
+  font-size: 11px !important;
+  padding: 2px 8px !important;
+}
+.ws-comp-leader-caveat {
+  font-size: 11px;
+  color: rgba(251,191,36,0.8);
+  margin-top: 6px;
+}
+
+/* Confidence comparison bars */
+.ws-comp-conf-compare { margin-top: 16px; }
+.ws-comp-conf-bars { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ws-comp-conf-row { display: flex; align-items: center; gap: 10px; }
+.ws-comp-conf-label {
+  font-size: 12px;
+  color: #a1a1aa;
+  min-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-comp-conf-bar-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ws-comp-conf-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.ws-comp-conf-level {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 60px;
+  text-align: right;
+}
+
 .ws-comp-section { margin-top: 16px; }
 
-.ws-tradeoff-list {
-  margin: 0;
-  padding-left: 18px;
+/* Trade-off cards */
+.ws-tradeoff-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ws-tradeoff-card {
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-left: 3px solid rgba(251,191,36,0.3);
+  border-radius: 8px;
   font-size: 13px;
-  color: #a1a1aa;
-  line-height: 1.7;
+  color: #d4d4d8;
+  line-height: 1.5;
+}
+
+/* Safety vs Upside tension */
+.ws-comp-tension {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 10px;
+}
+.ws-comp-tension-item { flex: 1; text-align: center; }
+.ws-comp-tension-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.ws-comp-tension-safe .ws-comp-tension-name { color: #22c55e; }
+.ws-comp-tension-upside .ws-comp-tension-name { color: #a78bfa; }
+.ws-comp-tension-vs {
+  font-size: 12px;
+  color: #52525b;
+  font-weight: 700;
 }
 
 .ws-comp-grid {
@@ -1913,6 +2006,12 @@
   background: rgba(59,130,246,0.08);
   border-color: rgba(59,130,246,0.2);
   color: #93c5fd;
+}
+.sphere-guided-prompt-loading {
+  font-size: 12px;
+  color: rgba(255,255,255,0.3);
+  padding: 8px 14px;
+  font-style: italic;
 }
 
 /* Return CTA */

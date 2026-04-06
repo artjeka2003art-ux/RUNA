@@ -38,7 +38,7 @@ _WORKSPACE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "w
 # ── Sphere relevance scoring ────────────────────────────────────────
 
 _SPHERE_SYNONYMS: dict[str, list[str]] = {
-    "финанс": ["деньги", "бюджет", "доход", "зарплата", "накопления", "подушка"],
+    "финанс": ["деньги", "бюджет", "доход", "зарплата", "накопления", "подушка", "расход", "оклад", "кредит", "ипотек", "долг"],
     "карьер": ["работа", "профессия", "должность", "рост", "повышение", "компания", "офис", "увольн"],
     "здоровь": ["спорт", "режим", "сон", "тело", "медицин", "врач", "болезн"],
     "отношени": ["партнёр", "партнер", "семья", "любовь", "брак", "близкие", "друзья", "социальн"],
@@ -210,17 +210,23 @@ def _validate_routing(
                     fit_ok = True
 
                 if not fit_ok:
-                    # Weak fit — the missing item domain doesn't match sphere domain
-                    item["routing_mode"] = "suggest_new_sphere"
-                    # Suggest a sphere matching the what_domain
-                    suggested = None
-                    for domain, info in _DOMAIN_SIGNALS.items():
-                        domain_root = _normalize(info["suggested_sphere"])[:6]
-                        if what_domain and what_domain in domain_root or domain_root in (what_domain or ""):
-                            suggested = info["suggested_sphere"]
-                            break
-                    item["suggested_sphere_name"] = suggested or what_text[:30]
-                    item["routing_reason"] = f"«{hint}» не подходит для этих данных"
+                    # Weak fit — try to find a BETTER existing sphere first
+                    better = _find_best_existing_sphere(what_text, sphere_names)
+                    if better and _normalize(better) != hint_norm:
+                        # Found a better sphere — redirect there
+                        item["sphere_hint"] = better
+                        item["routing_reason"] = f"Перенаправлено из «{hint}» в «{better}»"
+                    else:
+                        # No better sphere — suggest new
+                        item["routing_mode"] = "suggest_new_sphere"
+                        suggested = None
+                        for domain, info in _DOMAIN_SIGNALS.items():
+                            domain_root = _normalize(info["suggested_sphere"])[:6]
+                            if what_domain and what_domain in domain_root or domain_root in (what_domain or ""):
+                                suggested = info["suggested_sphere"]
+                                break
+                        item["suggested_sphere_name"] = suggested or what_text[:30]
+                        item["routing_reason"] = f"«{hint}» не подходит для этих данных"
 
         elif mode == "multiple_candidates":
             # Validate that candidate spheres actually exist
@@ -250,12 +256,7 @@ def _validate_routing(
                 item["sphere_hint"] = best
                 item["suggested_sphere_name"] = ""
                 item["routing_reason"] = f"Лимит сфер достигнут — направлено в «{best}»"
-            else:
-                # No good match even with relaxed scoring — pick the most generic sphere
-                item["routing_mode"] = "existing_sphere"
-                item["sphere_hint"] = sphere_names[0]
-                item["suggested_sphere_name"] = ""
-                item["routing_reason"] = f"Лимит сфер достигнут — направлено в «{sphere_names[0]}»"
+            # else: no good match — keep suggest_new_sphere, don't force random sphere
 
     return missing_items
 
@@ -1840,16 +1841,27 @@ class PredictionQueryAgent:
                                     "candidate_spheres": [],
                                 })
                             elif at_limit:
-                                best = _find_best_existing_sphere(suggested, all_sph) or all_sph[0]
-                                missing_items.append({
-                                    "what": f"Базовый контекст: {suggested.lower()}",
-                                    "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
-                                    "sphere_hint": best,
-                                    "routing_mode": "existing_sphere",
-                                    "suggested_sphere_name": "",
-                                    "routing_reason": f"Лимит сфер достигнут — направлено в «{best}»",
-                                    "candidate_spheres": [],
-                                })
+                                best = _find_best_existing_sphere(suggested, all_sph)
+                                if best:
+                                    missing_items.append({
+                                        "what": f"Базовый контекст: {suggested.lower()}",
+                                        "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
+                                        "sphere_hint": best,
+                                        "routing_mode": "existing_sphere",
+                                        "suggested_sphere_name": "",
+                                        "routing_reason": f"Лимит сфер достигнут — направлено в «{best}»",
+                                        "candidate_spheres": [],
+                                    })
+                                else:
+                                    missing_items.append({
+                                        "what": f"Базовый контекст: {suggested.lower()}",
+                                        "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
+                                        "sphere_hint": "",
+                                        "routing_mode": "suggest_new_sphere",
+                                        "suggested_sphere_name": suggested,
+                                        "routing_reason": "Контекст не подтверждён, но подразумевается вопросом",
+                                        "candidate_spheres": [],
+                                    })
                             else:
                                 missing_items.append({
                                     "what": f"Базовый контекст: {suggested.lower()}",

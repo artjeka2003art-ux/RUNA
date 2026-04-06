@@ -645,7 +645,12 @@ export default function PredictionView({
           )}
 
           {result.comparison && result.reports.length > 1 && (
-            <ComparisonBlock data={result.comparison} />
+            <ComparisonBlock
+              data={result.comparison}
+              reports={result.reports}
+              missingCount={result.context_completeness?.missing?.length || 0}
+              rankingVariable={result.comparison.ranking_variable}
+            />
           )}
 
           {result.external_insights && (
@@ -1018,48 +1023,124 @@ function QualityBadge({ quality }: { quality: PredictionQuality }) {
   );
 }
 
-function ComparisonBlock({ data }: { data: ScenarioComparison }) {
+function ComparisonBlock({ data, reports, missingCount, rankingVariable }: {
+  data: ScenarioComparison;
+  reports: ScenarioReport[];
+  missingCount: number;
+  rankingVariable?: string;
+}) {
+  // Determine current leader from confidence + summary
+  const confOrder: Record<string, number> = { low: 0, medium: 1, high: 2 };
+  const sorted = [...reports].sort((a, b) =>
+    (confOrder[b.confidence] ?? 0) - (confOrder[a.confidence] ?? 0)
+  );
+  const leader = data.safest_variant || sorted[0]?.variant_label;
+  const leaderReport = reports.find(r => r.variant_label === leader);
+  const leaderConf = leaderReport?.confidence || "low";
+
+  // Check if leader is truly better or just better-confirmed
+  const allSameConf = reports.every(r => r.confidence === reports[0]?.confidence);
+  const highestUpside = data.highest_upside_variant;
+  const upsideIsDifferent = highestUpside && highestUpside !== leader;
+
   return (
     <div className="ws-block ws-comparison-block">
       <h3 className="ws-block-title">Сравнение сценариев</h3>
-      {data.summary && <p className="ws-text ws-comp-summary">{data.summary}</p>}
-      {data.key_tradeoffs?.length > 0 && (
-        <div className="ws-comp-section">
-          <span className="ws-mini-label">Ключевые trade-offs</span>
-          <ul className="ws-tradeoff-list">
-            {data.key_tradeoffs.map((t, i) => (<li key={i}>{t}</li>))}
-          </ul>
+
+      {/* Current leader banner */}
+      {leader && (
+        <div className="ws-comp-leader">
+          <div className="ws-comp-leader-row">
+            <span className="ws-comp-leader-label">При текущих данных сильнее:</span>
+            <span className="ws-comp-leader-name">{leader}</span>
+            <span className="ws-confidence-badge ws-comp-leader-conf"
+                  style={{ color: CONFIDENCE_COLORS[leaderConf], borderColor: CONFIDENCE_COLORS[leaderConf] }}>
+              {CONFIDENCE_LABELS[leaderConf]}
+            </span>
+          </div>
+          {missingCount > 0 && (
+            <div className="ws-comp-leader-caveat">
+              Сравнение ограничено — не хватает {missingCount} {missingCount === 1 ? "элемента" : missingCount < 5 ? "элементов" : "элементов"} контекста
+            </div>
+          )}
         </div>
       )}
+
+      {/* Summary verdict */}
+      {data.summary && <p className="ws-text ws-comp-summary">{data.summary}</p>}
+
+      {/* Scenario confidence comparison */}
+      {reports.length > 1 && !allSameConf && (
+        <div className="ws-comp-conf-compare">
+          <span className="ws-mini-label">Уверенность по сценариям</span>
+          <div className="ws-comp-conf-bars">
+            {reports.map((r, i) => {
+              const conf = r.confidence || "low";
+              const color = CONFIDENCE_COLORS[conf] || CONFIDENCE_COLORS.low;
+              const width = conf === "high" ? "100%" : conf === "medium" ? "66%" : "33%";
+              return (
+                <div key={i} className="ws-comp-conf-row">
+                  <span className="ws-comp-conf-label">{r.variant_label}</span>
+                  <div className="ws-comp-conf-bar-track">
+                    <div className="ws-comp-conf-bar-fill" style={{ width, background: color }} />
+                  </div>
+                  <span className="ws-comp-conf-level" style={{ color }}>
+                    {CONFIDENCE_LABELS[conf]}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Trade-offs */}
+      {data.key_tradeoffs?.length > 0 && (
+        <div className="ws-comp-section">
+          <span className="ws-mini-label">Trade-offs: что получаешь и чем платишь</span>
+          <div className="ws-tradeoff-cards">
+            {data.key_tradeoffs.map((t, i) => (
+              <div key={i} className="ws-tradeoff-card">{t}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tension: upside vs safety */}
+      {upsideIsDifferent && (
+        <div className="ws-comp-tension">
+          <div className="ws-comp-tension-item ws-comp-tension-safe">
+            <span className="ws-mini-label">Безопаснее</span>
+            <span className="ws-comp-tension-name">{data.safest_variant}</span>
+          </div>
+          <div className="ws-comp-tension-vs">vs</div>
+          <div className="ws-comp-tension-item ws-comp-tension-upside">
+            <span className="ws-mini-label">Больше потенциал</span>
+            <span className="ws-comp-tension-name">{highestUpside}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden trap */}
       {data.hidden_trap && (
         <div className="ws-comp-section ws-comp-trap">
           <span className="ws-mini-label ws-label-downside">Ловушка</span>
           <p className="ws-text">{data.hidden_trap}</p>
         </div>
       )}
+
+      {/* Sensitive factor + ranking variable */}
       <div className="ws-comp-grid">
-        {data.safest_variant && (
-          <div className="ws-comp-cell">
-            <span className="ws-mini-label">Безопаснее всего</span>
-            <span className="ws-comp-value ws-comp-safe">{data.safest_variant}</span>
-          </div>
-        )}
-        {data.highest_upside_variant && (
-          <div className="ws-comp-cell">
-            <span className="ws-mini-label">Максимальный потенциал</span>
-            <span className="ws-comp-value ws-comp-upside">{data.highest_upside_variant}</span>
-          </div>
-        )}
         {data.most_sensitive_factor && (
-          <div className="ws-comp-cell ws-comp-cell-full">
-            <span className="ws-mini-label">Самый чувствительный фактор</span>
+          <div className="ws-comp-cell">
+            <span className="ws-mini-label">Что сильнее всего меняет расклад</span>
             <span className="ws-comp-value ws-comp-factor">{data.most_sensitive_factor}</span>
           </div>
         )}
-        {data.ranking_variable && (
-          <div className="ws-comp-cell ws-comp-cell-full">
-            <span className="ws-mini-label">Что нужно узнать для окончательного выбора</span>
-            <span className="ws-comp-value">{data.ranking_variable}</span>
+        {rankingVariable && (
+          <div className="ws-comp-cell">
+            <span className="ws-mini-label">Что узнать для окончательного выбора</span>
+            <span className="ws-comp-value">{rankingVariable}</span>
           </div>
         )}
       </div>

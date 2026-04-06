@@ -398,19 +398,21 @@ def archive_sphere(user_id: str, sphere_id: str) -> tuple[str, dict]:
 
 
 def create_sphere_with_id(user_id: str, sphere_name: str, description: str = "") -> tuple[str, dict]:
-    """Create sphere and return its elementId."""
+    """Create sphere and return its elementId. Uses MERGE to prevent duplicates."""
     query = """
-    CREATE (s:Sphere {
-        user_id: $user_id,
-        name: $sphere_name,
-        description: $description,
-        archived: false,
-        created_at: datetime(),
-        updated_at: datetime()
-    })
+    MERGE (s:Sphere {user_id: $user_id, name: $sphere_name})
+    ON CREATE SET
+        s.description = $description,
+        s.archived = false,
+        s.created_at = datetime(),
+        s.updated_at = datetime()
+    ON MATCH SET
+        s.updated_at = datetime(),
+        s.archived = false
     WITH s
     MATCH (p:Person {user_id: $user_id})
-    CREATE (p)-[:AFFECTS {weight: 0.5, created_at: datetime()}]->(s)
+    MERGE (p)-[r:AFFECTS]->(s)
+    ON CREATE SET r.weight = 0.5, r.created_at = datetime()
     RETURN elementId(s) AS id, s.name AS name
     """
     return query, {"user_id": user_id, "sphere_name": sphere_name, "description": description}

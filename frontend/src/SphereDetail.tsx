@@ -7,6 +7,7 @@ import {
   getSphereDocuments,
   uploadSphereDocument,
   deleteSphereDocument,
+  getEnrichmentPrompts,
   type SphereDocument,
 } from "./api";
 
@@ -57,18 +58,19 @@ const DOMAIN_PROMPTS: Record<string, string[]> = {
   "переезд":  ["Куда рассматриваешь переезд?", "Что удерживает в текущем месте?", "Есть ли жильё / план на новом месте?"],
 };
 
+/** Returns { prompts, isDomain } — isDomain=true means fast static match */
 function getGuidedPrompts(
   sphereName: string,
   missingWhat: string,
   ctx?: WorkspaceSphereContext | null,
-): string[] {
+): { prompts: string[]; isDomain: boolean } {
   const sNorm = sphereName.toLowerCase().replace(/[ёЁ]/g, "е");
   const mNorm = missingWhat.toLowerCase().replace(/[ёЁ]/g, "е");
 
-  // 1. Try domain-based prompts first
+  // 1. Try domain-based prompts first (fast path)
   for (const [domain, prompts] of Object.entries(DOMAIN_PROMPTS)) {
     if (sNorm.includes(domain) || mNorm.includes(domain)) {
-      return prompts;
+      return { prompts, isDomain: true };
     }
   }
 
@@ -116,14 +118,17 @@ function getGuidedPrompts(
     return true;
   });
 
-  if (unique.length > 0) return unique.slice(0, 4);
+  if (unique.length > 0) return { prompts: unique.slice(0, 4), isDomain: false };
 
   // 3. Final fallback
-  return [
-    `Расскажи, что происходит с "${sphereName}" сейчас`,
-    "Какие основные факты система должна знать?",
-    "Что может измениться в ближайшее время?",
-  ];
+  return {
+    prompts: [
+      `Расскажи, что происходит с "${sphereName}" сейчас`,
+      "Какие основные факты система должна знать?",
+      "Что может измениться в ближайшее время?",
+    ],
+    isDomain: false,
+  };
 }
 
 // ── Enrichment persistence ──
@@ -177,6 +182,8 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const [adaptivePrompts, setAdaptivePrompts] = useState<string[] | null>(null);
+  const [promptsLoading, setPromptsLoading] = useState(false);
 
   // Persist enrichment context when entering from workspace
   useEffect(() => {
@@ -193,7 +200,32 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   useEffect(() => {
     loadSphere();
     loadDocs();
+    setAdaptivePrompts(null);
   }, [userId, sphereId]);
+
+  // Fetch adaptive prompts for non-standard spheres
+  useEffect(() => {
+    if (!sphere || !effectiveWsCtx) return;
+    const { isDomain } = getGuidedPrompts(sphere.name, effectiveWsCtx.missingWhat, effectiveWsCtx);
+    if (isDomain) return; // Standard domain — static prompts are fine
+
+    let cancelled = false;
+    setPromptsLoading(true);
+    const allMissing = effectiveWsCtx.allMissing?.map(m => m.what) || [effectiveWsCtx.missingWhat];
+    getEnrichmentPrompts(
+      sphere.name,
+      effectiveWsCtx.missingWhat,
+      effectiveWsCtx.missingWhy,
+      effectiveWsCtx.question || "",
+      allMissing,
+    ).then(prompts => {
+      if (!cancelled && prompts && prompts.length > 0) {
+        setAdaptivePrompts(prompts);
+      }
+      if (!cancelled) setPromptsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [sphere?.name, effectiveWsCtx?.missingWhat]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
@@ -346,11 +378,11 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
             </div>
           )}
 
-          {/* Guided prompts */}
+          {/* Guided prompts — adaptive or static */}
           <div className="sphere-guided-prompts">
             <span className="sphere-guided-prompts-label">Быстрые вопросы — ответь в чате ниже:</span>
             <div className="sphere-guided-prompts-list">
-              {getGuidedPrompts(sphere.name, effectiveWsCtx.missingWhat, effectiveWsCtx).map((p, i) => (
+              {(adaptivePrompts || getGuidedPrompts(sphere.name, effectiveWsCtx.missingWhat, effectiveWsCtx).prompts).map((p, i) => (
                 <button
                   key={i}
                   className="sphere-guided-prompt-btn"
@@ -359,6 +391,9 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
                   {p}
                 </button>
               ))}
+              {promptsLoading && !adaptivePrompts && (
+                <div className="sphere-guided-prompt-loading">Подбираю вопросы под вашу сферу...</div>
+              )}
             </div>
           </div>
 

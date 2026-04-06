@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, UploadFile, File, Form
+from pydantic import BaseModel
 
 from backend.models.schemas import (
     APIResponse,
@@ -319,3 +320,61 @@ async def delete_document(sphere_id: str, doc_id: str, user_id: str, request: Re
     if not ok:
         return APIResponse(success=False, error="Документ не найден")
     return APIResponse(success=True, data={"deleted": True})
+
+
+# ── Adaptive Enrichment Prompts ──
+
+class EnrichmentPromptsRequest(BaseModel):
+    sphere_name: str
+    missing_what: str
+    missing_why: str = ""
+    question: str = ""
+    all_missing: list[str] = []
+
+
+@router.post("/enrichment-prompts", response_model=APIResponse)
+async def generate_enrichment_prompts(body: EnrichmentPromptsRequest, request: Request):
+    """Generate adaptive guided prompts for sphere enrichment via LLM."""
+    import json
+    from backend.constants import AI_MODEL
+
+    ai = request.app.state.sphere_agent.ai
+
+    missing_list = "\n".join(f"- {m}" for m in body.all_missing[:5]) if body.all_missing else f"- {body.missing_what}"
+
+    prompt = f"""Ты — помощник системы Runa. Пользователь пришёл в сферу «{body.sphere_name}» чтобы добавить данные для более точного прогноза.
+
+Вопрос пользователя: {body.question or '(не указан)'}
+Что нужно уточнить:
+{missing_list}
+Почему: {body.missing_why or 'для повышения точности прогноза'}
+
+Сгенерируй 3-4 коротких вопроса, которые помогут пользователю быстро добавить нужные данные.
+
+Правила:
+- Вопросы должны быть конкретными и практичными
+- Привязаны к сфере «{body.sphere_name}» и к тому, что нужно уточнить
+- Деликатный тон, особенно для чувствительных тем
+- Не больше 15 слов на вопрос
+- Без нумерации
+
+Верни ТОЛЬКО JSON массив строк: ["вопрос1", "вопрос2", "вопрос3"]"""
+
+    try:
+        resp = await ai.chat.completions.create(
+            model=AI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            temperature=0.3,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        # Extract JSON array
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            prompts = json.loads(text[start:end])
+            if isinstance(prompts, list) and len(prompts) > 0:
+                return APIResponse(success=True, data={"prompts": prompts[:5]})
+        return APIResponse(success=False, error="Failed to parse prompts")
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
