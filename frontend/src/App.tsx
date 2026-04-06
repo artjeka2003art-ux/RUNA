@@ -5,6 +5,7 @@ import PredictionView from "./PredictionView";
 import LifeMap from "./LifeMap";
 import SphereDetail from "./SphereDetail";
 import Reveal from "./Reveal";
+import { createSphere } from "./api";
 import "./App.css";
 
 function getUserId(): string {
@@ -36,6 +37,8 @@ export interface RevealData {
 export interface WorkspaceSphereContext {
   missingWhat: string;
   missingWhy: string;
+  question?: string;
+  allMissing?: { what: string; why: string }[];
 }
 
 function App() {
@@ -85,6 +88,26 @@ function App() {
     setSphereOrigin("workspace");
     setWorkspaceSphereCtx(ctx);
     setTab("sphere-detail");
+  }
+
+  /** Called from workspace when user clicks "create new sphere" for missing context */
+  async function handleCreateSphereAndNavigate(
+    sphereName: string,
+    ctx: WorkspaceSphereContext,
+  ) {
+    try {
+      const res = await createSphere(userId, sphereName);
+      const newSphereId = res?.data?.sphere?.id;
+      if (newSphereId) {
+        setSelectedSphereId(newSphereId);
+        setSphereIntro(null);
+        setSphereOrigin("workspace");
+        setWorkspaceSphereCtx(ctx);
+        setTab("sphere-detail");
+      }
+    } catch {
+      /* creation failed — stay on workspace */
+    }
   }
 
   function handleBackFromSphere() {
@@ -165,6 +188,7 @@ function App() {
           <PredictionView
             userId={userId}
             onNavigateToSphere={handleOpenSphereFromWorkspace}
+            onCreateSphereAndNavigate={handleCreateSphereAndNavigate}
             returnedFromSphere={returnedFromSphere}
             onClearReturned={() => setReturnedFromSphere(false)}
           />

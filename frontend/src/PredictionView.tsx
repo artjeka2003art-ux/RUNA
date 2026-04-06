@@ -22,19 +22,21 @@ interface WorkspaceState {
   timestamp: number;
 }
 
+const WS_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
 function saveWorkspaceState(state: WorkspaceState) {
   try {
-    sessionStorage.setItem(WS_STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(state));
   } catch { /* quota exceeded */ }
 }
 
 function loadWorkspaceState(): WorkspaceState | null {
   try {
-    const raw = sessionStorage.getItem(WS_STORAGE_KEY);
+    const raw = localStorage.getItem(WS_STORAGE_KEY);
     if (!raw) return null;
     const state = JSON.parse(raw) as WorkspaceState;
-    if (Date.now() - state.timestamp > 30 * 60 * 1000) {
-      sessionStorage.removeItem(WS_STORAGE_KEY);
+    if (Date.now() - state.timestamp > WS_TTL) {
+      localStorage.removeItem(WS_STORAGE_KEY);
       return null;
     }
     return state;
@@ -250,6 +252,37 @@ function computeDiff(prev: WorkspaceResult, next: WorkspaceResult): DiffItem[] {
     }
   }
 
+  // Assumptions reduced
+  const prevAssumptions = (prev.context_completeness?.assumptions || []).filter(a => a.status !== "confirmed");
+  const nextAssumptions = (next.context_completeness?.assumptions || []).filter(a => a.status !== "confirmed");
+  if (prevAssumptions.length > 0 && nextAssumptions.length < prevAssumptions.length) {
+    const resolved = prevAssumptions.length - nextAssumptions.length;
+    items.push({
+      type: "positive",
+      text: `Снято допущений: ${resolved} (базовый контекст подтверждён)`,
+    });
+  }
+
+  // Resolved missing items (by what)
+  const prevMissingWhats = new Set((prev.context_completeness?.missing || []).map(m => normalize(m.what)));
+  const resolvedItems = (prev.context_completeness?.missing || [])
+    .filter(m => !new Set((next.context_completeness?.missing || []).map(m2 => normalize(m2.what))).has(normalize(m.what)));
+  if (resolvedItems.length > 0 && resolvedItems.length <= 5) {
+    items.push({
+      type: "positive",
+      text: `Закрыты пробелы: ${resolvedItems.map(m => m.what).join(", ")}`,
+    });
+  }
+
+  // Remaining gaps (honest feedback)
+  const remainingMissing = next.context_completeness?.missing || [];
+  if (remainingMissing.length > 0 && prevMissingWhats.size > 0) {
+    items.push({
+      type: "neutral",
+      text: `Ещё не хватает (${remainingMissing.length}): ${remainingMissing.slice(0, 3).map(m => m.what).join(", ")}${remainingMissing.length > 3 ? "..." : ""}`,
+    });
+  }
+
   // Comparison changes
   if (prev.comparison && next.comparison) {
     if (prev.comparison.safest_variant !== next.comparison.safest_variant &&
@@ -326,6 +359,8 @@ function inferProbableCause(prev: WorkspaceResult, next: WorkspaceResult, items:
 interface WorkspaceSphereContext {
   missingWhat: string;
   missingWhy: string;
+  question?: string;
+  allMissing?: { what: string; why: string }[];
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -359,6 +394,7 @@ const WEIGHT_LABELS: Record<string, string> = {
 interface PredictionViewProps {
   userId: string;
   onNavigateToSphere?: (sphereId: string, ctx: WorkspaceSphereContext) => void;
+  onCreateSphereAndNavigate?: (sphereName: string, ctx: WorkspaceSphereContext) => void;
   returnedFromSphere?: boolean;
   onClearReturned?: () => void;
 }
@@ -366,6 +402,7 @@ interface PredictionViewProps {
 export default function PredictionView({
   userId,
   onNavigateToSphere,
+  onCreateSphereAndNavigate,
   returnedFromSphere,
   onClearReturned,
 }: PredictionViewProps) {
@@ -448,14 +485,53 @@ export default function PredictionView({
     return findBestSphere(hint, spheres);
   }
 
-  function handleMissingContextClick(item: MissingContextItem) {
-    if (!onNavigateToSphere || !item.sphere_hint) return;
-    const sphereId = findSphereId(item.sphere_hint);
-    if (!sphereId) return;
-    persistState();
-    onNavigateToSphere(sphereId, {
+  /** Collect all missing items that route to the same sphere */
+  function buildSphereContext(item: MissingContextItem, targetHint: string): WorkspaceSphereContext {
+    const allMissing = (result?.context_completeness?.missing || [])
+      .filter((m) => {
+        if (m.routing_mode === "existing_sphere" && m.sphere_hint) {
+          return findSphereId(m.sphere_hint) === findSphereId(targetHint);
+        }
+        if (m.routing_mode === "multiple_candidates" && m.candidate_spheres) {
+          return m.candidate_spheres.some((c) => findSphereId(c) === findSphereId(targetHint));
+        }
+        return false;
+      })
+      .map((m) => ({ what: m.what, why: m.why_important }));
+
+    return {
       missingWhat: item.what,
       missingWhy: item.why_important,
+      question: question || result?.question || "",
+      allMissing: allMissing.length > 1 ? allMissing : undefined,
+    };
+  }
+
+  function handleMissingContextClick(item: MissingContextItem) {
+    if (!item.sphere_hint) return;
+    const sphereId = findSphereId(item.sphere_hint);
+    if (sphereId && onNavigateToSphere) {
+      persistState();
+      onNavigateToSphere(sphereId, buildSphereContext(item, item.sphere_hint));
+    }
+  }
+
+  function handleMissingCandidateClick(sphereName: string, item: MissingContextItem) {
+    if (!onNavigateToSphere) return;
+    const sphereId = findSphereId(sphereName);
+    if (!sphereId) return;
+    persistState();
+    onNavigateToSphere(sphereId, buildSphereContext(item, sphereName));
+  }
+
+  function handleCreateSphereClick(item: MissingContextItem) {
+    const name = item.suggested_sphere_name || item.sphere_hint;
+    if (!name || !onCreateSphereAndNavigate) return;
+    persistState();
+    onCreateSphereAndNavigate(name, {
+      missingWhat: item.what,
+      missingWhy: item.why_important,
+      question: question || result?.question || "",
     });
   }
 
@@ -552,6 +628,8 @@ export default function PredictionView({
           <ContextCompletenessBlock
             data={result.context_completeness}
             onMissingClick={handleMissingContextClick}
+            onCandidateClick={handleMissingCandidateClick}
+            onCreateSphere={handleCreateSphereClick}
             findSphereId={findSphereId}
           />
 
@@ -650,10 +728,14 @@ function DiffBlock({ items }: { items: DiffItem[] }) {
 function ContextCompletenessBlock({
   data,
   onMissingClick,
+  onCandidateClick,
+  onCreateSphere,
   findSphereId,
 }: {
   data: ContextCompleteness;
   onMissingClick: (item: MissingContextItem) => void;
+  onCandidateClick: (sphereName: string, item: MissingContextItem) => void;
+  onCreateSphere: (item: MissingContextItem) => void;
   findSphereId: (hint: string) => string | null;
 }) {
   if (!data) return null;
@@ -679,27 +761,84 @@ function ContextCompletenessBlock({
         </div>
       )}
 
+      {data.assumptions && data.assumptions.filter(a => a.status !== "confirmed").length > 0 && (
+        <div className="ws-context-assumptions">
+          <span className="ws-mini-label">⚠ Допущения (не подтверждено):</span>
+          <div className="ws-assumption-list">
+            {data.assumptions.filter(a => a.status !== "confirmed").map((a, i) => (
+              <div key={i} className={`ws-assumption-item ws-assumption-${a.status}`}>
+                <span>{a.assumption_text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {data.missing?.length > 0 && (
         <div className="ws-context-missing">
           <span className="ws-mini-label">Чего не хватает:</span>
           <div className="ws-missing-list">
             {data.missing.map((m, i) => {
-              const hasLink = m.sphere_hint && findSphereId(m.sphere_hint);
+              const mode = m.routing_mode || "existing_sphere";
               return (
                 <div key={i} className="ws-missing-item">
                   <div className="ws-missing-what">{m.what}</div>
                   <div className="ws-missing-why">{m.why_important}</div>
-                  {m.sphere_hint && (
-                    hasLink ? (
+
+                  {mode === "existing_sphere" && m.sphere_hint && (() => {
+                    const hasLink = findSphereId(m.sphere_hint);
+                    return hasLink ? (
                       <button
                         className="ws-missing-sphere ws-missing-sphere-link"
                         onClick={() => onMissingClick(m)}
                       >
-                        Перейти в сферу: {m.sphere_hint} &rarr;
+                        Перейти в сферу: {m.sphere_hint} →
                       </button>
                     ) : (
                       <span className="ws-missing-sphere">{m.sphere_hint}</span>
-                    )
+                    );
+                  })()}
+
+                  {mode === "multiple_candidates" && m.candidate_spheres && m.candidate_spheres.length > 0 && (
+                    <div className="ws-missing-candidates">
+                      <span className="ws-missing-candidates-label">Подходят несколько сфер:</span>
+                      <div className="ws-missing-candidates-list">
+                        {m.candidate_spheres.map((name, j) => {
+                          const sid = findSphereId(name);
+                          return sid ? (
+                            <button
+                              key={j}
+                              className="ws-missing-sphere ws-missing-sphere-link ws-missing-candidate"
+                              onClick={() => onCandidateClick(name, m)}
+                            >
+                              {name} →
+                            </button>
+                          ) : (
+                            <span key={j} className="ws-missing-sphere ws-missing-candidate">{name}</span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {mode === "suggest_new_sphere" && (
+                    <div className="ws-missing-suggest-new">
+                      {onCreateSphere ? (
+                        <button
+                          className="ws-missing-sphere ws-missing-sphere-create"
+                          onClick={() => onCreateSphere(m)}
+                        >
+                          + Создать сферу «{m.suggested_sphere_name || m.sphere_hint}»
+                        </button>
+                      ) : (
+                        <span className="ws-missing-sphere ws-missing-sphere-new">
+                          Нужна новая сфера: {m.suggested_sphere_name || m.sphere_hint}
+                        </span>
+                      )}
+                      {m.routing_reason && (
+                        <span className="ws-missing-routing-reason">{m.routing_reason}</span>
+                      )}
+                    </div>
                   )}
                 </div>
               );

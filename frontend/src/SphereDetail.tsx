@@ -38,6 +38,118 @@ interface Msg {
 interface WorkspaceSphereContext {
   missingWhat: string;
   missingWhy: string;
+  question?: string;
+  allMissing?: { what: string; why: string }[];
+}
+
+// ── Domain-aware guided prompts ──
+
+const DOMAIN_PROMPTS: Record<string, string[]> = {
+  "карьер":   ["Какая у тебя сейчас должность и формат работы?", "В какой компании и индустрии работаешь?", "Какой notice period / условия ухода?", "Насколько сильная текущая нагрузка?"],
+  "финанс":   ["Какой размер финансовой подушки (в месяцах расходов)?", "Какие ежемесячные обязательные расходы?", "Есть ли долги, кредиты, ипотека?", "Есть ли дополнительные источники дохода?"],
+  "здо��овь":  ["Как давно длится текущее состояние?", "Есть ли диагнозы или лечение?", "Сколько часов сна в среднем?", "Насколько устойчив текущий режим?"],
+  "отношени": ["Какой текущий статус отношений?", "Есть ли регулярные конфликты или дистанция?", "Есть ли поддержка / support system?"],
+  "образован":["Какая программа / направление?", "С��олько времени осталось до завершения?", "Какие альтернативы рассматриваешь?"],
+  "проект":   ["На какой стадии проект?", "Работаешь один или в команде?", "Какой runway / ресурсы?"],
+  "режим":    ["Сколько часов работаешь в день?", "Сколько спишь?", "Как давно в таком режиме?", "Что ломается первым при перегрузке?"],
+  "эмоцион":  ["Как бы ты описал текущее состояние?", "Есть ли терапия / психолог?", "Что помогает восстанавливаться?"],
+  "семь":     ["Какая ситуация в семье сейчас?", "Есть ли зависимые (дети, родители)?", "Как семья влияет на решение?"],
+  "переезд":  ["Куда рассматриваешь переезд?", "Что удерживает в текущем месте?", "Есть ли жильё / план на новом месте?"],
+};
+
+function getGuidedPrompts(
+  sphereName: string,
+  missingWhat: string,
+  ctx?: WorkspaceSphereContext | null,
+): string[] {
+  const sNorm = sphereName.toLowerCase().replace(/[ёЁ]/g, "е");
+  const mNorm = missingWhat.toLowerCase().replace(/[ёЁ]/g, "е");
+
+  // 1. Try domain-based prompts first
+  for (const [domain, prompts] of Object.entries(DOMAIN_PROMPTS)) {
+    if (sNorm.includes(domain) || mNorm.includes(domain)) {
+      return prompts;
+    }
+  }
+
+  // 2. Context-shaped prompts: build from sphere name + missing items + question
+  const contextPrompts: string[] = [];
+
+  // Extract meaningful words from sphere name for targeted questions
+  const nameWords = sNorm.split(/[\s,.\-—/()]+/).filter(w => w.length > 2);
+  const isSpecific = nameWords.length > 1; // e.g. "Релокация в Испанию"
+
+  if (isSpecific) {
+    contextPrompts.push(`Какая сейчас ситуация с "${sphereName}"?`);
+  }
+
+  // Build prompts from all missing items
+  const allMissing = ctx?.allMissing || [{ what: missingWhat, why: "" }];
+  for (const m of allMissing.slice(0, 3)) {
+    const w = m.what.toLowerCase();
+    if (w.includes("бюджет") || w.includes("финанс") || w.includes("подушк") || w.includes("расход")) {
+      contextPrompts.push("Какой бюджет / финансовые ресурсы на это?");
+    } else if (w.includes("сроки") || w.includes("когда") || w.includes("дедлайн") || w.includes("горизонт")) {
+      contextPrompts.push("Какие сроки / дедлайны?");
+    } else if (w.includes("работ") || w.includes("оффер") || w.includes("должнос��")) {
+      contextPrompts.push("Есть ли уже работа / оффер / план трудоустройства?");
+    } else if (w.includes("жиль") || w.includes("квартир") || w.includes("дом")) {
+      contextPrompts.push("Есть ли решение по жилью?");
+    } else if (w.includes("поддержк") || w.includes("помощ") || w.includes("support")) {
+      contextPrompts.push("Есть ли поддержка / кто помогает?");
+    } else {
+      contextPrompts.push(`Расскажи подробнее: ${m.what}`);
+    }
+  }
+
+  // Add question-aware prompt
+  if (ctx?.question && contextPrompts.length < 4) {
+    contextPrompts.push("Что для тебя самое важное в этом решении?");
+  }
+
+  // Deduplicate
+  const seen = new Set<string>();
+  const unique = contextPrompts.filter(p => {
+    const k = p.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  if (unique.length > 0) return unique.slice(0, 4);
+
+  // 3. Final fallback
+  return [
+    `Расскажи, что происходит с "${sphereName}" сейчас`,
+    "Какие основные факты система должна знать?",
+    "Что может измениться в ближайшее время?",
+  ];
+}
+
+// ── Enrichment persistence ──
+const ENRICHMENT_KEY = "runa_enrichment_ctx";
+const ENRICHMENT_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+function saveEnrichmentCtx(sphereId: string, ctx: WorkspaceSphereContext) {
+  try {
+    localStorage.setItem(ENRICHMENT_KEY, JSON.stringify({ sphereId, ctx, ts: Date.now() }));
+  } catch { /* ignore */ }
+}
+
+function loadEnrichmentCtx(sphereId: string): WorkspaceSphereContext | null {
+  try {
+    const raw = localStorage.getItem(ENRICHMENT_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data.sphereId === sphereId && Date.now() - data.ts < ENRICHMENT_TTL) {
+      return data.ctx;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function clearEnrichmentCtx() {
+  localStorage.removeItem(ENRICHMENT_KEY);
 }
 
 interface SphereDetailProps {
@@ -49,6 +161,9 @@ interface SphereDetailProps {
 }
 
 export default function SphereDetail({ userId, sphereId, intro, onBack, workspaceContext }: SphereDetailProps) {
+  // Restore enrichment context from sessionStorage if prop not provided
+  const effectiveWsCtx = workspaceContext || loadEnrichmentCtx(sphereId);
+
   const [sphere, setSphere] = useState<SphereData | null>(null);
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<Msg[]>(() =>
@@ -62,6 +177,18 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+
+  // Persist enrichment context when entering from workspace
+  useEffect(() => {
+    if (workspaceContext) {
+      saveEnrichmentCtx(sphereId, workspaceContext);
+    }
+  }, [sphereId, workspaceContext]);
+
+  function handleBack() {
+    clearEnrichmentCtx();
+    onBack();
+  }
 
   useEffect(() => {
     loadSphere();
@@ -188,24 +315,63 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
 
   return (
     <div className="sphere-detail">
-      {/* Workspace context banner */}
-      {workspaceContext && (
-        <div className="sphere-ws-banner">
-          <div className="sphere-ws-banner-label">Из Decision Workspace</div>
-          <div className="sphere-ws-banner-what">
-            Нужно добавить: <strong>{workspaceContext.missingWhat}</strong>
+      {/* Guided enrichment panel from workspace */}
+      {effectiveWsCtx && (
+        <div className="sphere-guided">
+          <div className="sphere-guided-header">
+            <span className="sphere-guided-badge">Из Decision Workspace</span>
+            {effectiveWsCtx.question && (
+              <div className="sphere-guided-question">
+                Вопрос: <em>«{effectiveWsCtx.question}»</em>
+              </div>
+            )}
           </div>
-          <div className="sphere-ws-banner-why">{workspaceContext.missingWhy}</div>
-          <button className="sphere-ws-banner-back" onClick={onBack}>
-            &larr; Вернуться в Workspace
+
+          <div className="sphere-guided-reason">
+            <div className="sphere-guided-what">
+              <strong>Что нужно добавить:</strong> {effectiveWsCtx.missingWhat}
+            </div>
+            <div className="sphere-guided-why">{effectiveWsCtx.missingWhy}</div>
+          </div>
+
+          {/* Additional missing items for this sphere */}
+          {effectiveWsCtx.allMissing && effectiveWsCtx.allMissing.length > 1 && (
+            <div className="sphere-guided-all">
+              <span className="sphere-guided-all-label">Всего не хватает в этой сфере:</span>
+              {effectiveWsCtx.allMissing.map((m, i) => (
+                <div key={i} className="sphere-guided-all-item">
+                  <span className="sphere-guided-all-what">{m.what}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Guided prompts */}
+          <div className="sphere-guided-prompts">
+            <span className="sphere-guided-prompts-label">Быстрые вопросы — ответь в чате ниже:</span>
+            <div className="sphere-guided-prompts-list">
+              {getGuidedPrompts(sphere.name, effectiveWsCtx.missingWhat, effectiveWsCtx).map((p, i) => (
+                <button
+                  key={i}
+                  className="sphere-guided-prompt-btn"
+                  onClick={() => { setInput(p); }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button className="sphere-guided-back" onClick={handleBack}>
+            &larr; Вернуться и пересчитать прогноз
           </button>
         </div>
       )}
 
       {/* Header */}
       <div className="sphere-detail-header">
-        <button className="sphere-back-btn" onClick={onBack}>
-          &larr; {workspaceContext ? "Decision Workspace" : "Life Map"}
+        <button className="sphere-back-btn" onClick={handleBack}>
+          &larr; {effectiveWsCtx ? "Decision Workspace" : "Life Map"}
         </button>
 
         <div className="sphere-detail-title-row">
@@ -311,7 +477,7 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
         )}
 
         {/* Empty state — no related entities yet */}
-        {!hasRelated && !intro && (
+        {!hasRelated && !intro && !effectiveWsCtx && (
           <div className="sphere-empty-state">
             <p>Эта сфера пока пуста. Расскажи о ней в чате ниже — Runa начнёт строить картину.</p>
           </div>
@@ -394,12 +560,21 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
             <div ref={bottom} />
           </div>
 
+          {/* Sticky rerun CTA after adding context */}
+          {effectiveWsCtx && messages.filter(m => m.role === "user").length > 0 && (
+            <div className="sphere-guided-rerun">
+              <button className="sphere-guided-rerun-btn" onClick={handleBack}>
+                Вернуться и пересчитать прогноз &rarr;
+              </button>
+            </div>
+          )}
+
           <div className="chat-input-bar">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
-              placeholder={`Что происходит в "${sphere.name}"?`}
+              placeholder={effectiveWsCtx ? `Ответь на вопрос о "${sphere.name}"` : `Что происходит в "${sphere.name}"?`}
               disabled={sending}
             />
             <button onClick={send} disabled={sending || !input.trim()}>&#x2191;</button>

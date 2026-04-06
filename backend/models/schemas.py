@@ -233,12 +233,31 @@ class MissingContextItem(BaseModel):
     what: str = ""
     why_important: str = ""
     sphere_hint: str = ""
+    # Routing v2 fields
+    routing_mode: Literal[
+        "existing_sphere", "multiple_candidates", "suggest_new_sphere"
+    ] = "existing_sphere"
+    candidate_spheres: list[str] = Field(
+        default_factory=list,
+        description="Sphere names for multiple_candidates mode",
+    )
+    suggested_sphere_name: str = ""
+    routing_reason: str = ""
+
+
+class QueryAssumption(BaseModel):
+    """A base-context assumption implied by the question but not confirmed in world model."""
+    assumption_text: str = ""
+    domain: str = ""  # e.g. "work", "finance", "relationship"
+    status: Literal["confirmed", "query_implied", "missing_critical"] = "query_implied"
+    affects_confidence: bool = True
 
 
 class ContextCompleteness(BaseModel):
     score: ConfidenceLevel = ConfidenceLevel.low
     known_factors: list[str] = Field(default_factory=list)
     missing: list[MissingContextItem] = Field(default_factory=list)
+    assumptions: list[QueryAssumption] = Field(default_factory=list)
 
 
 class LeverageFactor(BaseModel):

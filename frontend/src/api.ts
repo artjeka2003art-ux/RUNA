@@ -83,16 +83,30 @@ export async function sendPredictionQuery(userId: string, question: string, sphe
 
 // ── Decision Workspace ──
 
+export type RoutingMode = "existing_sphere" | "multiple_candidates" | "suggest_new_sphere";
+
 export interface MissingContextItem {
   what: string;
   why_important: string;
   sphere_hint: string;
+  routing_mode?: RoutingMode;
+  candidate_spheres?: string[];
+  suggested_sphere_name?: string;
+  routing_reason?: string;
+}
+
+export interface QueryAssumption {
+  assumption_text: string;
+  domain: string;
+  status: "confirmed" | "query_implied" | "missing_critical";
+  affects_confidence: boolean;
 }
 
 export interface ContextCompleteness {
   score: "low" | "medium" | "high";
   known_factors: string[];
   missing: MissingContextItem[];
+  assumptions?: QueryAssumption[];
 }
 
 export interface LeverageFactor {

@@ -45,10 +45,26 @@
 ### 2. context_completeness
 - score: "low" | "medium" | "high"
 - known_factors: что конкретно ��звестно из данных пользователя (список строк)
-- missing: чего не хватает для точного прогноза:
+- missing: чего не хватает для точного прогноза. Для каждого элемента:
   - what: что именно
   - why_important: как это конкретно повлияло бы на прогноз
-  - sphere_hint: в какую сферу пойти
+  - sphere_hint: название сферы (используется для навигации)
+  - routing_mode: ОБЯЗАТЕЛЬНО один из трёх вариантов:
+    - "existing_sphere" — если среди сфер пользователя ТОЧНО есть подходящая (сильное совпадение по теме)
+    - "multiple_candidates" — если данные логично относятся к 2 сферам и нельзя выбрать одну
+    - "suggest_new_sphere" — если подходящей сферы НЕТ и нужно предложить создать новую
+  - candidate_spheres: массив названий сфер (только для multiple_candidates, 2 штуки)
+  - suggested_sphere_name: название новой сферы (только для suggest_new_sphere)
+  - routing_reason: краткая причина выбора routing_mode
+
+  ВАЖНО ПРО ROUTING:
+  - НЕ привязывай missing context к неподходящей сфере! Если у пользователя нет сферы "Финансы", НЕ отправляй финансовые данные в "Ментальное здоровье" или "Карьера".
+  - Если нужной сферы нет И у пользователя менее 10 сфер — используй "suggest_new_sphere" и предложи конкретное имя.
+  - Если у пользователя уже 10+ сфер — НЕ предлагай новые. Направляй в максимально логичную существующую сферу.
+  - Для "existing_sphere": sphere_hint должен ТОЧНО совпадать с названием существующей сферы.
+  - Для "multiple_candidates": candidate_spheres содержит 2 подходящих варианта.
+  - Для "suggest_new_sphere": suggested_sphere_name — имя новой сферы на русском.
+  - Существующие сферы пользователя перечислены в контексте выше. Сверяйся с ними.
 
 ### 3. reports — массив, ОБЯЗАТЕЛЬНО по одному на КАЖДЫЙ вариант сценария
 
@@ -93,10 +109,23 @@
 
 Верни ТОЛЬКО валидный JSON объект (без markdown, без ```):
 
-{"restated_question": "...", "context_completeness": {"score": "...", "known_factors": ["..."], "missing": [{"what": "...", "why_important": "...", "sphere_hint": "..."}]}, "reports": [{"variant_label": "...", "most_likely_outcome": "...", "alternative_outcome": "...", "main_risks": ["..."], "leverage_factors": [{"factor": "...", "direction": "...", "weight": "..."}], "primary_bottleneck": "...", "dominant_downside": "...", "non_obvious_insight": "...", "condition_that_changes_prediction": "...", "decision_signal": "...", "confidence": "...", "confidence_reason": "...", "affected_spheres": ["..."], "depends_on": "...", "next_step": "..."}], "comparison": {"summary": "...", "key_tradeoffs": ["..."], "safest_variant": "...", "highest_upside_variant": "...", "most_sensitive_factor": "...", "hidden_trap": "...", "ranking_variable": "..."}, "external_insights": "..."}
+{"restated_question": "...", "context_completeness": {"score": "...", "known_factors": ["..."], "missing": [{"what": "...", "why_important": "...", "sphere_hint": "...", "routing_mode": "existing_sphere|multiple_candidates|suggest_new_sphere", "candidate_spheres": [], "suggested_sphere_name": "", "routing_reason": "..."}]}, "reports": [{"variant_label": "...", "most_likely_outcome": "...", "alternative_outcome": "...", "main_risks": ["..."], "leverage_factors": [{"factor": "...", "direction": "...", "weight": "..."}], "primary_bottleneck": "...", "dominant_downside": "...", "non_obvious_insight": "...", "condition_that_changes_prediction": "...", "decision_signal": "...", "confidence": "...", "confidence_reason": "...", "affected_spheres": ["..."], "depends_on": "...", "next_step": "..."}], "comparison": {"summary": "...", "key_tradeoffs": ["..."], "safest_variant": "...", "highest_upside_variant": "...", "most_sensitive_factor": "...", "hidden_trap": "...", "ranking_variable": "..."}, "external_insights": "..."}
 
 ## Ключевой принцип
 
 Если ответ мог бы подойти 100 разным людям — он слишком generic. Переделай.
 Если в ответе нет ��и одного конкретного факта из контекста пользователя — он бесполезен.
 Если comparison не даёт ясности "какой сценарий лучше" — он провалился.
+
+## Честность по отношению к контексту
+
+ВАЖНО: Различай ТРИ типа информации:
+1. **Подтверждённое** — реально есть в контексте пользователя выше
+2. **Подразумеваемое вопросом** — например, "если я уволюсь" подразумевает, что человек работает, но это может быть НЕ подтверждено в контексте
+3. **Отсутствующее** — ключевые данные, которых нет ни в контексте, ни в вопросе
+
+НЕ МОЛЧИ о подразумеваемом контексте. Если вопрос подразумевает базовый домен (работа, финансы, отношения), но в контексте этого домена нет или мало данных:
+- Можешь дать предварительный ответ — НЕ отказывайся
+- Но формулируй УСЛОВНО: "если предположить, что...", "при допущении, что..."
+- В confidence_reason укажи, что базовый контекст не подтверждён
+- В missing context включи этот базовый контекст как приоритетный

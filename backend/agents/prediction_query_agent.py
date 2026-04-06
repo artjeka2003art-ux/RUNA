@@ -49,6 +49,262 @@ _SPHERE_SYNONYMS: dict[str, list[str]] = {
 }
 
 _MAX_RELEVANT_SPHERES = 4
+_MAX_SPHERES_BEFORE_REUSE = 10  # Don't suggest new spheres if user already has this many
+
+# ── Context integrity: domain detection & routing validation ──────
+
+# Maps domain keywords found in questions → domain label + suggested sphere name
+_DOMAIN_SIGNALS: dict[str, dict] = {
+    "work": {
+        "keywords": ["уволюсь", "уволиться", "увольнен", "работа", "работу", "работой",
+                      "должност", "компани", "оффер", "offer", "коллег", "начальник",
+                      "зарплат", "карьер", "повышен", "рабочий", "рабочую", "рабочее"],
+        "suggested_sphere": "Карьера",
+    },
+    "finance": {
+        "keywords": ["подушк", "финанс", "деньг", "бюджет", "доход", "расход", "долг",
+                      "runway", "накоплен", "кредит", "ипотек", "аренд"],
+        "suggested_sphere": "Финансы",
+    },
+    "relationship": {
+        "keywords": ["разведусь", "развод", "партнёр", "партнер", "отношени", "брак",
+                      "жена", "муж", "свадьб"],
+        "suggested_sphere": "О��ношения",
+    },
+    "relocation": {
+        "keywords": ["перееду", "переезд", "релокац", "жильё", "жилье", "квартир",
+                      "город", "страна", "эмиграц"],
+        "suggested_sphere": "Переезд",
+    },
+    "health": {
+        "keywords": ["лечен", "терапи", "здоровь", "врач", "диагноз", "операци",
+                      "больниц", "режим сна", "выгоран", "депресс"],
+        "suggested_sphere": "Здоровье",
+    },
+    "education": {
+        "keywords": ["магистратур", "учёб", "учеб", "универ", "экзамен", "обучен",
+                      "диплом", "курс", "школ"],
+        "suggested_sphere": "Образование",
+    },
+}
+
+
+def _detect_implied_domains(question: str) -> list[str]:
+    """Return domain labels implied by the question text."""
+    q = _normalize(question)
+    found = []
+    for domain, info in _DOMAIN_SIGNALS.items():
+        if any(kw in q for kw in info["keywords"]):
+            found.append(domain)
+    return found
+
+
+def _sphere_fits_domain(sphere_name: str, sphere_desc: str, domain: str) -> float:
+    """Score how well a sphere covers a domain. Returns 0.0-1.0."""
+    info = _DOMAIN_SIGNALS.get(domain)
+    if not info:
+        return 0.0
+    s_text = _normalize(sphere_name + " " + (sphere_desc or ""))
+    # Check synonyms
+    domain_root = info["suggested_sphere"]
+    if _normalize(domain_root) in s_text:
+        return 1.0
+    synonyms = _SPHERE_SYNONYMS.get(_normalize(domain_root)[:6], [])
+    all_terms = [_normalize(domain_root)] + [_normalize(t) for t in synonyms]
+    hits = sum(1 for t in all_terms if t in s_text)
+    if hits >= 2:
+        return 0.8
+    if hits == 1:
+        return 0.5
+    return 0.0
+
+
+def _find_best_existing_sphere(what_text: str, sphere_names: list[str]) -> str | None:
+    """Find the best existing sphere for a missing context item using synonym matching."""
+    what_norm = _normalize(what_text)
+    best_name = None
+    best_score = 0.0
+    for sn in sphere_names:
+        sn_norm = _normalize(sn)
+        score = 0.0
+        for root, aliases in _SPHERE_SYNONYMS.items():
+            all_terms = [root] + aliases
+            what_hit = any(t in what_norm for t in all_terms)
+            sphere_hit = any(t in sn_norm for t in all_terms)
+            if what_hit and sphere_hit:
+                score = max(score, 0.7)
+        # Also check domain signals for stronger matching
+        for domain, info in _DOMAIN_SIGNALS.items():
+            what_hit = any(kw in what_norm for kw in info["keywords"])
+            sphere_fit = _sphere_fits_domain(sn, "", domain)
+            if what_hit and sphere_fit >= 0.5:
+                score = max(score, sphere_fit)
+        if score > best_score:
+            best_score = score
+            best_name = sn
+    return best_name if best_score >= 0.4 else None
+
+
+def _validate_routing(
+    missing_items: list[dict],
+    sphere_names: list[str],
+) -> list[dict]:
+    """Post-process LLM routing decisions. Fix forced weak matches.
+    When sphere count >= _MAX_SPHERES_BEFORE_REUSE, never suggest new spheres."""
+    name_set = {_normalize(n) for n in sphere_names}
+    at_limit = len(sphere_names) >= _MAX_SPHERES_BEFORE_REUSE
+
+    for item in missing_items:
+        mode = item.get("routing_mode", "existing_sphere")
+        hint = item.get("sphere_hint", "")
+        hint_norm = _normalize(hint)
+
+        if mode == "existing_sphere":
+            # Check 1: does the sphere actually exist?
+            sphere_exists = any(hint_norm == n or hint_norm in n or n in hint_norm for n in name_set)
+            if not sphere_exists:
+                # Sphere doesn't exist — check if it SHOULD exist (weak match to another?)
+                # Try to find a real sphere that fits via synonyms
+                best_name = None
+                best_score = 0.0
+                what_norm = _normalize(item.get("what", ""))
+
+                for sn in sphere_names:
+                    for root, aliases in _SPHERE_SYNONYMS.items():
+                        all_terms = [root] + aliases
+                        hint_matches = any(t in hint_norm or t in what_norm for t in all_terms)
+                        sphere_matches = any(t in _normalize(sn) for t in all_terms)
+                        if hint_matches and sphere_matches:
+                            score = 0.7
+                            if score > best_score:
+                                best_score = score
+                                best_name = sn
+
+                if best_score >= 0.7 and best_name:
+                    # Good synonym match — fix the hint to actual sphere name
+                    item["sphere_hint"] = best_name
+                    item["routing_reason"] = item.get("routing_reason", "") or f"Перенаправлено в существующую сферу «{best_name}»"
+                else:
+                    # No good match — switch to suggest_new_sphere
+                    item["routing_mode"] = "suggest_new_sphere"
+                    item["suggested_sphere_name"] = item.get("suggested_sphere_name") or hint or item.get("what", "")[:30]
+                    item["routing_reason"] = "Подходящей сферы не найдено"
+            else:
+                # Sphere exists — but is the fit between WHAT is missing and the sphere good?
+                what_text = _normalize(item.get("what", ""))
+                fit_ok = False
+                # Find which domain the missing item belongs to
+                what_domain = None
+                sphere_domain = None
+                for root, aliases in _SPHERE_SYNONYMS.items():
+                    all_terms = [root] + aliases
+                    if any(t in what_text for t in all_terms):
+                        what_domain = root
+                    if any(t in hint_norm for t in all_terms):
+                        sphere_domain = root
+                # If both belong to same domain, fit is good
+                if what_domain and sphere_domain and what_domain == sphere_domain:
+                    fit_ok = True
+                # If no clear domain for what, trust the LLM
+                elif not what_domain:
+                    fit_ok = True
+
+                if not fit_ok:
+                    # Weak fit — the missing item domain doesn't match sphere domain
+                    item["routing_mode"] = "suggest_new_sphere"
+                    # Suggest a sphere matching the what_domain
+                    suggested = None
+                    for domain, info in _DOMAIN_SIGNALS.items():
+                        domain_root = _normalize(info["suggested_sphere"])[:6]
+                        if what_domain and what_domain in domain_root or domain_root in (what_domain or ""):
+                            suggested = info["suggested_sphere"]
+                            break
+                    item["suggested_sphere_name"] = suggested or what_text[:30]
+                    item["routing_reason"] = f"«{hint}» не подходит для этих данных"
+
+        elif mode == "multiple_candidates":
+            # Validate that candidate spheres actually exist
+            candidates = item.get("candidate_spheres", [])
+            valid = [c for c in candidates if any(
+                _normalize(c) == n or _normalize(c) in n or n in _normalize(c)
+                for n in name_set
+            )]
+            if len(valid) >= 2:
+                item["candidate_spheres"] = valid
+            elif len(valid) == 1:
+                item["routing_mode"] = "existing_sphere"
+                item["sphere_hint"] = valid[0]
+            else:
+                item["routing_mode"] = "suggest_new_sphere"
+                item["suggested_sphere_name"] = item.get("suggested_sphere_name") or candidates[0] if candidates else ""
+                item["routing_reason"] = "Указанные сферы не найдены"
+
+        # Enforce sphere limit: convert suggest_new_sphere → best existing sphere
+        if at_limit and item.get("routing_mode") == "suggest_new_sphere":
+            best = _find_best_existing_sphere(
+                item.get("what", "") + " " + item.get("suggested_sphere_name", ""),
+                sphere_names,
+            )
+            if best:
+                item["routing_mode"] = "existing_sphere"
+                item["sphere_hint"] = best
+                item["suggested_sphere_name"] = ""
+                item["routing_reason"] = f"Лимит сфер достигнут — направлено в «{best}»"
+            else:
+                # No good match even with relaxed scoring — pick the most generic sphere
+                item["routing_mode"] = "existing_sphere"
+                item["sphere_hint"] = sphere_names[0]
+                item["suggested_sphere_name"] = ""
+                item["routing_reason"] = f"Лимит сфер достигнут — направлено в «{sphere_names[0]}»"
+
+    return missing_items
+
+
+def _detect_assumptions(
+    question: str,
+    personal_context: str,
+    sphere_names: list[str],
+) -> list[dict]:
+    """Detect query-implied assumptions not confirmed in personal context."""
+    implied_domains = _detect_implied_domains(question)
+    if not implied_domains:
+        return []
+
+    ctx_norm = _normalize(personal_context)
+    assumptions = []
+
+    for domain in implied_domains:
+        info = _DOMAIN_SIGNALS[domain]
+        suggested = info["suggested_sphere"]
+
+        # Check if this domain is confirmed in sphere names
+        sphere_confirmed = any(
+            _sphere_fits_domain(sn, "", domain) >= 0.5
+            for sn in sphere_names
+        )
+
+        # Check if personal context mentions this domain substantively
+        context_confirmed = sum(1 for kw in info["keywords"] if kw in ctx_norm) >= 3
+
+        if sphere_confirmed and context_confirmed:
+            status = "confirmed"
+            affects = False
+        elif sphere_confirmed or context_confirmed:
+            status = "query_implied"
+            affects = True
+        else:
+            status = "missing_critical"
+            affects = True
+
+        if status != "confirmed":
+            assumptions.append({
+                "assumption_text": f"Вопрос подразумевает контекст: {suggested.lower()}",
+                "domain": domain,
+                "status": status,
+                "affects_confidence": affects,
+            })
+
+    return assumptions
 
 
 def _normalize(s: str) -> str:
@@ -1421,12 +1677,25 @@ class PredictionQueryAgent:
                 variants.append(extra)
 
         personal_context, used_sphere_names, used_doc_names, doc_snippets = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+
+        # Fetch ALL sphere names for routing validation (not just relevant ones)
+        all_sphere_names: list[str] = []
+        try:
+            q, p = graph_queries.get_spheres_with_descriptions(user_id)
+            rows = await self.graph.execute_query(q, p)
+            if rows:
+                all_sphere_names = [r["name"] for r in rows]
+        except Exception:
+            all_sphere_names = used_sphere_names[:]
+
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize_workspace(
             question, question_type, personal_context, external_context, variants,
             sphere_names=used_sphere_names, doc_names=used_doc_names,
             doc_snippets=doc_snippets,
+            all_sphere_names=all_sphere_names,
+            personal_context_raw=personal_context,
         )
 
         result["question"] = question
@@ -1492,6 +1761,8 @@ class PredictionQueryAgent:
         sphere_names: list[str] | None = None,
         doc_names: list[str] | None = None,
         doc_snippets: list[dict] | None = None,
+        all_sphere_names: list[str] | None = None,
+        personal_context_raw: str | None = None,
     ) -> dict:
         variants_text = "\n".join(f"- {v}" for v in variants)
         prompt = (
@@ -1522,8 +1793,78 @@ class PredictionQueryAgent:
                 except Exception:
                     pass  # use original result
 
+            # ── Context Integrity Guardrails v1 ──
+
+            # A. Validate missing context routing against real spheres
+            all_sph = all_sphere_names or sphere_names
+            cc = result.get("context_completeness", {})
+            missing_items = cc.get("missing", [])
+            if missing_items:
+                _validate_routing(missing_items, all_sph)
+                cc["missing"] = missing_items
+
+            # B. Detect query-implied assumptions
+            ctx_raw = personal_context_raw or personal_context
+            assumptions = _detect_assumptions(question, ctx_raw, all_sph)
+            if assumptions:
+                cc["assumptions"] = assumptions
+                # Add assumption-sensitive missing context items for critical gaps
+                for a in assumptions:
+                    if a["status"] == "missing_critical":
+                        domain_info = _DOMAIN_SIGNALS.get(a["domain"], {})
+                        suggested = domain_info.get("suggested_sphere", "")
+                        # Check if already covered
+                        already = any(
+                            _normalize(suggested) in _normalize(m.get("sphere_hint", "") + m.get("suggested_sphere_name", ""))
+                            for m in missing_items
+                        )
+                        if not already:
+                            sphere_exists = any(
+                                _sphere_fits_domain(sn, "", a["domain"]) >= 0.5
+                                for sn in all_sph
+                            )
+                            at_limit = len(all_sph) >= _MAX_SPHERES_BEFORE_REUSE
+                            if sphere_exists:
+                                # Find the matching sphere name
+                                match_name = next(
+                                    (sn for sn in all_sph if _sphere_fits_domain(sn, "", a["domain"]) >= 0.5),
+                                    suggested,
+                                )
+                                missing_items.append({
+                                    "what": f"Базовый контекст: {suggested.lower()}",
+                                    "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
+                                    "sphere_hint": match_name,
+                                    "routing_mode": "existing_sphere",
+                                    "suggested_sphere_name": "",
+                                    "routing_reason": "Контекст не подтверждён, но подразумевается вопросом",
+                                    "candidate_spheres": [],
+                                })
+                            elif at_limit:
+                                best = _find_best_existing_sphere(suggested, all_sph) or all_sph[0]
+                                missing_items.append({
+                                    "what": f"Базовый контекст: {suggested.lower()}",
+                                    "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
+                                    "sphere_hint": best,
+                                    "routing_mode": "existing_sphere",
+                                    "suggested_sphere_name": "",
+                                    "routing_reason": f"Лимит сфер достигнут — направлено в «{best}»",
+                                    "candidate_spheres": [],
+                                })
+                            else:
+                                missing_items.append({
+                                    "what": f"Базовый контекст: {suggested.lower()}",
+                                    "why_important": "Вопрос подразумевает наличие этого контекста, но он не подтверждён в вашей модели жизни",
+                                    "sphere_hint": "",
+                                    "routing_mode": "suggest_new_sphere",
+                                    "suggested_sphere_name": suggested,
+                                    "routing_reason": "Контекст не подтверждён, но подразумевается вопросом",
+                                    "candidate_spheres": [],
+                                })
+
+            result["context_completeness"] = cc
+
             # Build evidence pack from available context
-            known_factors = result.get("context_completeness", {}).get("known_factors", [])
+            known_factors = cc.get("known_factors", [])
             evidence = build_evidence_pack(known_factors, sphere_names, doc_snippets)
 
             # 1. Quality guardrails (genericness + sharpness)
@@ -1638,6 +1979,19 @@ class PredictionQueryAgent:
                     report, report_claim_result, grounding, report_correction,
                     known_factors, missing_count, evidence,
                 )
+
+                # Assumption-aware confidence penalty
+                critical_assumptions = [
+                    a for a in assumptions
+                    if a.get("affects_confidence") and a.get("status") in ("missing_critical", "query_implied")
+                ]
+                if critical_assumptions:
+                    if cal["level"] == "high":
+                        cal["level"] = "medium"
+                    assumption_domains = ", ".join(a["domain"] for a in critical_assumptions)
+                    cal["reason"] = (cal.get("reason", "") or "") + f" Базовый контекст не подтверждён ({assumption_domains})."
+                    cal["assumption_penalty"] = True
+
                 report["confidence"] = cal["level"]
                 report["confidence_reason"] = cal["reason"]
                 report["_calibration"] = cal

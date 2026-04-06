@@ -1758,51 +1758,197 @@
   border-color: rgba(167,139,250,0.4);
 }
 
-/* Sphere detail: workspace context banner */
-.sphere-ws-banner {
-  margin: 0 0 20px;
-  padding: 16px 20px;
-  background: rgba(59,130,246,0.05);
-  border: 1px solid rgba(59,130,246,0.15);
-  border-left: 3px solid #3b82f6;
-  border-radius: 12px;
+/* Multiple candidates */
+.ws-missing-candidates { margin-top: 6px; }
+.ws-missing-candidates-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  display: block;
+  margin-bottom: 4px;
+}
+.ws-missing-candidates-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-missing-candidate { font-size: 12px; }
+
+/* Suggest new sphere */
+.ws-missing-suggest-new { margin-top: 6px; }
+.ws-missing-sphere-create {
+  display: inline-block;
+  cursor: pointer;
+  background: rgba(52,211,153,0.08);
+  border: 1px dashed rgba(52,211,153,0.3);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #34d399;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ws-missing-sphere-create:hover {
+  background: rgba(52,211,153,0.15);
+  border-color: rgba(52,211,153,0.5);
+}
+.ws-missing-sphere-new {
+  color: rgba(255,255,255,0.5);
+  font-style: italic;
+}
+.ws-missing-routing-reason {
+  display: block;
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+  margin-top: 3px;
 }
 
-.sphere-ws-banner-label {
+/* Assumptions */
+.ws-context-assumptions { margin-bottom: 12px; }
+.ws-assumption-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.ws-assumption-item {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border-left: 3px solid;
+}
+.ws-assumption-query_implied {
+  color: rgba(251,191,36,0.9);
+  border-color: rgba(251,191,36,0.4);
+  background: rgba(251,191,36,0.06);
+}
+.ws-assumption-missing_critical {
+  color: rgba(248,113,113,0.9);
+  border-color: rgba(248,113,113,0.4);
+  background: rgba(248,113,113,0.06);
+}
+
+/* Sphere detail: workspace context banner */
+/* Guided sphere enrichment panel */
+.sphere-guided {
+  margin: 0 0 20px;
+  padding: 20px;
+  background: rgba(59,130,246,0.04);
+  border: 1px solid rgba(59,130,246,0.12);
+  border-radius: 14px;
+}
+.sphere-guided-header { margin-bottom: 12px; }
+.sphere-guided-badge {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: #60a5fa;
-  margin-bottom: 8px;
 }
+.sphere-guided-question {
+  font-size: 13px;
+  color: #a1a1aa;
+  margin-top: 6px;
+}
+.sphere-guided-question em { color: #d4d4d8; font-style: normal; }
 
-.sphere-ws-banner-what {
+.sphere-guided-reason {
+  padding: 12px 14px;
+  background: rgba(59,130,246,0.06);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.sphere-guided-what {
   font-size: 14px;
   color: #e4e4e7;
   margin-bottom: 4px;
 }
-.sphere-ws-banner-what strong { color: #93c5fd; }
-
-.sphere-ws-banner-why {
+.sphere-guided-what strong { color: #93c5fd; font-weight: 600; }
+.sphere-guided-why {
   font-size: 12px;
   color: #71717a;
-  margin-bottom: 12px;
   line-height: 1.5;
 }
 
-.sphere-ws-banner-back {
-  padding: 6px 14px;
+/* All missing items for this sphere */
+.sphere-guided-all { margin-bottom: 14px; }
+.sphere-guided-all-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  display: block;
+  margin-bottom: 6px;
+}
+.sphere-guided-all-item {
+  font-size: 12px;
+  color: #a1a1aa;
+  padding: 3px 0;
+}
+.sphere-guided-all-item::before {
+  content: "•";
+  margin-right: 6px;
+  color: #60a5fa;
+}
+
+/* Guided prompt cards */
+.sphere-guided-prompts { margin-bottom: 16px; }
+.sphere-guided-prompts-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  display: block;
+  margin-bottom: 8px;
+}
+.sphere-guided-prompts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sphere-guided-prompt-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: #d4d4d8;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sphere-guided-prompt-btn:hover {
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.2);
+  color: #93c5fd;
+}
+
+/* Return CTA */
+.sphere-guided-back {
+  padding: 8px 16px;
   background: rgba(59,130,246,0.1);
   border: 1px solid rgba(59,130,246,0.2);
-  border-radius: 6px;
+  border-radius: 8px;
   color: #60a5fa;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s;
 }
-.sphere-ws-banner-back:hover { background: rgba(59,130,246,0.2); }
+.sphere-guided-back:hover { background: rgba(59,130,246,0.2); }
+
+/* Sticky rerun CTA after user adds data */
+.sphere-guided-rerun {
+  padding: 12px 0;
+  text-align: center;
+}
+.sphere-guided-rerun-btn {
+  padding: 10px 24px;
+  background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(167,139,250,0.15));
+  border: 1px solid rgba(59,130,246,0.3);
+  border-radius: 10px;
+  color: #93c5fd;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.sphere-guided-rerun-btn:hover {
+  background: linear-gradient(135deg, rgba(59,130,246,0.25), rgba(167,139,250,0.25));
+  transform: translateY(-1px);
+}
 
 /* Sphere documents */
 .sphere-docs {
