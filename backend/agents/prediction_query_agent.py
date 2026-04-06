@@ -410,16 +410,40 @@ def extract_claims(result: dict) -> list[ClaimMapping]:
     """Extract key claims from all scenario reports."""
     claims: list[ClaimMapping] = []
     for report in result.get("reports", []):
-        label = report.get("variant_label", "?")
-        for field in _DECISIVE_FIELDS:
-            text = (report.get(field) or "").strip()
-            if len(text) >= _MIN_FIELD_LENGTH:
-                claims.append(ClaimMapping(field, label, text, is_decisive=True))
-        for field in _SECONDARY_FIELDS:
-            text = (report.get(field) or "").strip()
-            if len(text) >= _MIN_FIELD_LENGTH:
-                claims.append(ClaimMapping(field, label, text, is_decisive=False))
+        claims.extend(extract_claims_for_report(report))
     return claims
+
+
+def extract_claims_for_report(report: dict) -> list[ClaimMapping]:
+    """Extract key claims from a single scenario report."""
+    label = report.get("variant_label", "?")
+    claims: list[ClaimMapping] = []
+    for field in _DECISIVE_FIELDS:
+        text = (report.get(field) or "").strip()
+        if len(text) >= _MIN_FIELD_LENGTH:
+            claims.append(ClaimMapping(field, label, text, is_decisive=True))
+    for field in _SECONDARY_FIELDS:
+        text = (report.get(field) or "").strip()
+        if len(text) >= _MIN_FIELD_LENGTH:
+            claims.append(ClaimMapping(field, label, text, is_decisive=False))
+    return claims
+
+
+def evaluate_report_support(
+    report: dict, evidence: list[EvidenceUnit],
+) -> dict:
+    """Per-report claim extraction + mapping + validation + support summary.
+
+    Returns {claims, claim_result, correction_pre} — all scoped to this report.
+    """
+    claims = extract_claims_for_report(report)
+    map_claims_to_evidence(claims, evidence)
+    claim_result = validate_claim_support(claims)
+    return {
+        "claims": claims,
+        "claim_result": claim_result,
+        "label": report.get("variant_label", "?"),
+    }
 
 
 def map_claims_to_evidence(claims: list[ClaimMapping], evidence: list[EvidenceUnit]) -> None:
@@ -1390,6 +1414,11 @@ class PredictionQueryAgent:
         # Auto-generate variants early so they inform context selection
         if not variants:
             variants = await self._generate_variants(question, question_type)
+        elif len(variants) == 1:
+            # User gave one variant but question implies another — extract from question
+            extra = await self._extract_implicit_variant(question, variants[0])
+            if extra and extra not in variants:
+                variants.append(extra)
 
         personal_context, used_sphere_names, used_doc_names, doc_snippets = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
         external_context, sources = await self._search_external(question, question_type)
@@ -1407,6 +1436,29 @@ class PredictionQueryAgent:
         result["variants"] = variants
         result["sources"] = sources
         return result
+
+    async def _extract_implicit_variant(self, question: str, existing_variant: str) -> str | None:
+        """If user gave 1 variant but question implies another, extract it."""
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": (
+                    f"Пользователь задал вопрос: \"{question}\"\n"
+                    f"И указал один вариант сценария: \"{existing_variant}\"\n\n"
+                    f"Есть ли в вопросе неявный второй вариант, отличный от указанного?\n"
+                    f"Если да — верни его одной короткой фразой (3-7 слов).\n"
+                    f"Если нет — верни слово NULL.\n"
+                    f"Ответ (одна строка):"
+                )}],
+                max_tokens=30,
+                temperature=0,
+            )
+            raw = resp.choices[0].message.content.strip().strip('"').strip("'")
+            if raw.upper() == "NULL" or len(raw) < 3:
+                return None
+            return raw
+        except Exception:
+            return None
 
     async def _generate_variants(self, question: str, question_type: str) -> list[str]:
         """Ask LLM to propose scenario variants when user didn't specify them."""
@@ -1458,6 +1510,18 @@ class PredictionQueryAgent:
         try:
             result = await self._call_workspace_llm(prompt)
 
+            # Validate report count matches variant count
+            n_reports = len(result.get("reports", []))
+            n_variants = len(variants)
+            if n_reports < n_variants:
+                logger.warning("LLM returned %d reports for %d variants, retrying with emphasis", n_reports, n_variants)
+                # Retry with explicit variant count reminder
+                retry_prompt = prompt + f"\n\nВАЖНО: верни РОВНО {n_variants} reports, по одному на КАЖДЫЙ вариант: {variants_text}"
+                try:
+                    result = await self._call_workspace_llm(retry_prompt)
+                except Exception:
+                    pass  # use original result
+
             # Build evidence pack from available context
             known_factors = result.get("context_completeness", {}).get("known_factors", [])
             evidence = build_evidence_pack(known_factors, sphere_names, doc_snippets)
@@ -1469,43 +1533,47 @@ class PredictionQueryAgent:
             grounding = validate_workspace_grounding(result, evidence)
             grounding_flags = grounding["flags"]
 
-            # 3. Claim-level support mapping
-            claims = extract_claims(result)
-            map_claims_to_evidence(claims, evidence)
-            claim_result = validate_claim_support(claims)
-            claim_flags = claim_result["flags"]
+            # 3. Per-report claim-level support mapping
+            all_claims: list[ClaimMapping] = []
+            per_report_support: dict[str, dict] = {}  # label → {claims, claim_result}
+            for report in result.get("reports", []):
+                rs = evaluate_report_support(report, evidence)
+                per_report_support[rs["label"]] = rs
+                all_claims.extend(rs["claims"])
+
+            # Aggregate claim flags for retry decision
+            claim_flags: list[str] = []
+            for rs in per_report_support.values():
+                claim_flags.extend(rs["claim_result"]["flags"])
 
             all_flags = quality_flags + grounding_flags + claim_flags
 
-            # Determine combined score (claim-aware)
+            # Determine combined score
             has_unsupported_decisive = any("unsupported_decisive" in f for f in claim_flags)
             if quality_score == "low" or any("detached" in f for f in grounding_flags):
                 combined_score = "low"
             elif has_unsupported_decisive:
-                combined_score = "low"  # unsupported decisive claim = always low
+                combined_score = "low"
             elif len(all_flags) <= 2:
                 combined_score = quality_score
             else:
                 combined_score = "medium" if quality_score == "high" else quality_score
 
-            # 4. Corrective retry if combined is low — now claim-aware
+            # 4. Corrective retry if combined is low — claim-aware
             retry_used = False
-            pre_retry_unsupported: list[str] = []
+            pre_retry_unsupported: list[str] = [
+                f"{c.variant_label}.{c.field}" for c in all_claims
+                if c.is_decisive and c.is_unsupported
+            ] if combined_score == "low" else []
             corrected_claims: list[str] = []
             still_unsupported: list[str] = []
 
             if combined_score == "low" and all_flags:
-                # Capture pre-retry unsupported decisive claims
-                pre_retry_unsupported = [
-                    f"{c.variant_label}.{c.field}" for c in claims
-                    if c.is_decisive and c.is_unsupported
-                ]
-
                 logger.info("Claim-aware correction triggered (%d flags, %d unsupported decisive), retrying",
                             len(all_flags), len(pre_retry_unsupported))
 
                 grounding_context = self._build_grounding_reminder(known_factors, sphere_names, doc_names)
-                claim_packet = build_claim_correction_packet(claims, evidence)
+                claim_packet = build_claim_correction_packet(all_claims, evidence)
 
                 corrected = await self._retry_workspace_correction(
                     result, all_flags, grounding_context, claim_packet,
@@ -1518,21 +1586,28 @@ class PredictionQueryAgent:
                     quality_score, quality_flags = validate_workspace_quality(result)
                     grounding = validate_workspace_grounding(result, evidence)
                     grounding_flags = grounding["flags"]
-                    claims = extract_claims(result)
-                    map_claims_to_evidence(claims, evidence)
-                    claim_result = validate_claim_support(claims)
-                    claim_flags = claim_result["flags"]
-                    all_flags = quality_flags + grounding_flags + claim_flags
-                    has_unsupported_decisive = any("unsupported_decisive" in f for f in claim_flags)
 
-                    # Track which claims were fixed vs still unsupported
+                    # Re-evaluate per-report
+                    all_claims = []
+                    per_report_support = {}
+                    for report in result.get("reports", []):
+                        rs = evaluate_report_support(report, evidence)
+                        per_report_support[rs["label"]] = rs
+                        all_claims.extend(rs["claims"])
+
+                    claim_flags = []
+                    for rs in per_report_support.values():
+                        claim_flags.extend(rs["claim_result"]["flags"])
+                    all_flags = quality_flags + grounding_flags + claim_flags
+
                     post_unsupported = {
-                        f"{c.variant_label}.{c.field}" for c in claims
+                        f"{c.variant_label}.{c.field}" for c in all_claims
                         if c.is_decisive and c.is_unsupported
                     }
                     corrected_claims = [c for c in pre_retry_unsupported if c not in post_unsupported]
                     still_unsupported = [c for c in pre_retry_unsupported if c in post_unsupported]
 
+                    has_unsupported_decisive = any("unsupported_decisive" in f for f in claim_flags)
                     if len(all_flags) == 0:
                         combined_score = "high"
                     elif has_unsupported_decisive:
@@ -1542,22 +1617,34 @@ class PredictionQueryAgent:
                     else:
                         combined_score = "low"
 
-            # 5. Confidence calibration v1
+            # 5. Per-report confidence calibration
             missing_count = len(result.get("context_completeness", {}).get("missing", []))
-            correction_meta = {
-                "corrected": corrected_claims,
-                "still_unsupported": still_unsupported,
-            } if retry_used else None
 
             for report in result.get("reports", []):
+                label = report.get("variant_label", "?")
+                rs = per_report_support.get(label)
+                report_claim_result = rs["claim_result"] if rs else {"summary": {}, "flags": []}
+
+                # Per-report correction tracking
+                report_prefix = f"{label}."
+                report_corrected = [c for c in corrected_claims if c.startswith(report_prefix)]
+                report_still_unsup = [c for c in still_unsupported if c.startswith(report_prefix)]
+                report_correction = {
+                    "corrected": report_corrected,
+                    "still_unsupported": report_still_unsup,
+                } if retry_used else None
+
                 cal = calibrate_confidence(
-                    report, claim_result, grounding, correction_meta,
+                    report, report_claim_result, grounding, report_correction,
                     known_factors, missing_count, evidence,
                 )
-                # Override LLM confidence with calibrated value
                 report["confidence"] = cal["level"]
                 report["confidence_reason"] = cal["reason"]
                 report["_calibration"] = cal
+                report["_claim_support"] = report_claim_result.get("summary", {})
+
+            # Aggregate claim summary for workspace-level metadata
+            agg_claim_result = validate_claim_support(all_claims)
 
             result["_quality"] = {
                 "score": combined_score,
@@ -1569,8 +1656,8 @@ class PredictionQueryAgent:
                 "grounding_components": grounding["components"],
                 "evidence_used": grounding["evidence_used"],
                 "evidence_missed": grounding["evidence_missed"],
-                "claim_support": claim_result["summary"],
-                "claims": claim_result.get("claims", [])[:8],
+                "claim_support": agg_claim_result["summary"],
+                "claims": agg_claim_result.get("claims", [])[:8],
                 "correction": {
                     "targeted_claims": pre_retry_unsupported,
                     "corrected": corrected_claims,
@@ -1595,6 +1682,12 @@ class PredictionQueryAgent:
 
     async def _call_workspace_llm(self, prompt: str) -> dict:
         """Call LLM and parse JSON response."""
+        # Sanitize: remove null bytes and other control chars that break JSON
+        prompt = prompt.replace("\x00", "").replace("\r", "")
+        # Truncate if too long (model context limit safety)
+        if len(prompt) > 60000:
+            prompt = prompt[:60000] + "\n\n[контекст усечён из-за размера]"
+        logger.info("Workspace LLM call: prompt length=%d chars", len(prompt))
         resp = await self.ai.chat.completions.create(
             model=AI_MODEL,
             messages=[{"role": "user", "content": prompt}],

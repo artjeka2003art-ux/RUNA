@@ -373,7 +373,6 @@ export default function PredictionView({
   const [variants, setVariants] = useState<string[]>([""]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<WorkspaceResult | null>(null);
-  const [prevResult, setPrevResult] = useState<WorkspaceResult | null>(null);
   const [diff, setDiff] = useState<DiffItem[] | null>(null);
   const [spheres, setSpheres] = useState<SphereRef[]>([]);
   const [contextUpdated, setContextUpdated] = useState(false);
@@ -438,7 +437,6 @@ export default function PredictionView({
         const newResult = res.data as WorkspaceResult;
         setResult(newResult);
         if (snapshotPrev) {
-          setPrevResult(snapshotPrev);
           setDiff(computeDiff(snapshotPrev, newResult));
         }
       }

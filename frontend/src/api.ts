@@ -125,6 +125,7 @@ export interface ScenarioReport {
   depends_on: string;
   next_step: string;
   _calibration?: ConfidenceCalibration;
+  _claim_support?: ClaimSupportSummary;
 }
 
 export interface ScenarioComparison {

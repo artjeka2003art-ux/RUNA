@@ -101,6 +101,8 @@ def _extract_docx(content: bytes) -> tuple[str, str]:
 
 def _clean(text: str) -> str:
     """Clean and truncate extracted text."""
+    # Remove null bytes and control chars that break JSON serialization
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{3,}", " ", text)
     return text.strip()[:_MAX_EXTRACT_LENGTH]
