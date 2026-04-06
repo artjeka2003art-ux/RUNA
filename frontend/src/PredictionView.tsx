@@ -8,6 +8,7 @@ import {
   type ScenarioComparison,
   type LeverageFactor,
   type MissingContextItem,
+  type PredictionQuality,
 } from "./api";
 
 // ── Workspace state persistence ──
@@ -542,6 +543,9 @@ export default function PredictionView({
             <span className="ws-type-badge">
               {TYPE_LABELS[result.question_type] || result.question_type}
             </span>
+            {result._quality && (
+              <QualityBadge quality={result._quality} />
+            )}
             {result.restated_question && (
               <div className="ws-restated">"{result.restated_question}"</div>
             )}
@@ -717,10 +721,27 @@ function ReportCard({ report }: { report: ScenarioReport }) {
     <div className="ws-report-card">
       <div className="ws-report-head">
         <div className="ws-report-label">{report.variant_label}</div>
-        <span className="ws-confidence-badge" style={{ color: confColor, borderColor: confColor }}>
+        <span className="ws-confidence-badge" style={{ color: confColor, borderColor: confColor }}
+              title={report.confidence_reason || ""}>
           {CONFIDENCE_LABELS[report.confidence] || report.confidence}
         </span>
       </div>
+
+      {/* Calibrated confidence explanation */}
+      {report._calibration && (report._calibration.limiters.length > 0 || report._calibration.suggestions.length > 0) && (
+        <div className="ws-confidence-detail">
+          {report.confidence_reason && (
+            <div className="ws-conf-reason">{report.confidence_reason}</div>
+          )}
+          {report._calibration.suggestions.length > 0 && (
+            <div className="ws-conf-suggestions">
+              {report._calibration.suggestions.map((s, i) => (
+                <span key={i} className="ws-conf-suggestion">{s}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Decision signal — top-level verdict */}
       {report.decision_signal && (
@@ -810,6 +831,53 @@ function LeverageFactorTag({ data }: { data: LeverageFactor }) {
         {WEIGHT_LABELS[data.weight] || data.weight}
       </span>
     </div>
+  );
+}
+
+const QUALITY_LABELS: Record<string, string> = {
+  high: "Sharp",
+  medium: "OK",
+  low: "Weak",
+};
+
+const QUALITY_COLORS: Record<string, string> = {
+  high: "#22c55e",
+  medium: "#f59e0b",
+  low: "#ef4444",
+};
+
+function QualityBadge({ quality }: { quality: PredictionQuality }) {
+  const color = QUALITY_COLORS[quality.score] || QUALITY_COLORS.low;
+  const parts: string[] = [];
+  if (quality.genericness_ok === false) parts.push("generic");
+  if (quality.grounding_ok === false) {
+    const gs = quality.grounding_score != null ? ` (${Math.round(quality.grounding_score * 100)}%)` : "";
+    parts.push(`grounding${gs}`);
+  }
+  const cs = quality.claim_support;
+  if (cs?.unsupported_decisive && cs.unsupported_decisive > 0) {
+    parts.push(`${cs.unsupported_decisive} unsupported key claim(s)`);
+  } else if (cs?.support_ratio != null && cs.support_ratio < 0.5) {
+    parts.push(`support ${Math.round(cs.support_ratio * 100)}%`);
+  }
+  // Correction outcome
+  const corr = quality.correction;
+  if (corr) {
+    if (corr.corrected.length > 0 && corr.still_unsupported.length === 0) {
+      parts.push(`${corr.corrected.length} claim(s) fixed`);
+    } else if (corr.still_unsupported.length > 0) {
+      parts.push(`${corr.still_unsupported.length} still weak`);
+    }
+  }
+  const tooltip = parts.length > 0 ? parts.join(" | ") : "All claims supported";
+  return (
+    <span
+      className="ws-quality-badge"
+      style={{ color, borderColor: color }}
+      title={tooltip}
+    >
+      {QUALITY_LABELS[quality.score]}{quality.retry_used ? " (corrected)" : ""}
+    </span>
   );
 }
 

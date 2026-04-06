@@ -1591,6 +1591,50 @@
   color: #e4e4e7;
 }
 
+/* Confidence detail */
+.ws-confidence-detail {
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.ws-conf-reason {
+  color: #a1a1aa;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.ws-conf-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ws-conf-suggestion {
+  font-size: 11px;
+  color: #a78bfa;
+  background: rgba(167,139,250,0.08);
+  border: 1px solid rgba(167,139,250,0.15);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+/* Quality badge */
+.ws-quality-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border: 1px solid;
+  border-radius: 4px;
+  margin-left: 8px;
+  cursor: default;
+}
+
 /* Comparison block */
 .ws-comparison-block {
   border-left: 3px solid #3b82f6;

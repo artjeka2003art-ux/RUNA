@@ -116,6 +116,599 @@ def _select_relevant_spheres(
     return relevant
 
 
+# ── Prediction quality guardrails ───────────────────────────────────
+
+_GENERIC_BLACKLIST = [
+    "важно учитывать",
+    "стоит обратить внимание",
+    "нужно хорошо подумать",
+    "всё зависит от многих факторов",
+    "может быть полезно",
+    "следует тщательно взвесить",
+    "это сложный вопрос",
+    "нельзя дать точный ответ",
+    "необходимо рассмотреть все стороны",
+    "нужно учитывать все факторы",
+    "подумайте о своих чувствах",
+    "найдите баланс",
+    "позаботьтесь о себе",
+    "поговорите с близкими",
+    "взвесьте все за и против",
+    "это индивидуальный выбор",
+    "только вы можете решить",
+    "у каждого варианта есть плюсы и минусы",
+    "оба варианта имеют свои преимущества",
+]
+
+_REQUIRED_REPORT_FIELDS = [
+    "most_likely_outcome",
+    "primary_bottleneck",
+    "dominant_downside",
+    "non_obvious_insight",
+    "condition_that_changes_prediction",
+    "decision_signal",
+]
+
+_REQUIRED_COMPARISON_FIELDS = ["summary", "hidden_trap", "ranking_variable"]
+
+_MIN_FIELD_LENGTH = 15  # fields shorter than this are considered empty/weak
+
+
+def _check_generic_phrases(text: str) -> list[str]:
+    """Find blacklisted generic phrases in text."""
+    lower = text.lower()
+    return [phrase for phrase in _GENERIC_BLACKLIST if phrase in lower]
+
+
+def validate_workspace_quality(result: dict) -> tuple[str, list[str]]:
+    """Validate workspace prediction quality.
+
+    Returns (quality_score, quality_flags).
+    quality_score: 'high' | 'medium' | 'low'
+    quality_flags: list of issues found
+    """
+    flags: list[str] = []
+
+    # Serialize all text for generic check
+    full_text = json.dumps(result, ensure_ascii=False)
+    generic_hits = _check_generic_phrases(full_text)
+    if generic_hits:
+        flags.append(f"generic_phrases:{len(generic_hits)}")
+
+    # Check each report
+    reports = result.get("reports", [])
+    for i, report in enumerate(reports):
+        label = report.get("variant_label", f"scenario_{i}")
+        for field in _REQUIRED_REPORT_FIELDS:
+            val = (report.get(field) or "").strip()
+            if len(val) < _MIN_FIELD_LENGTH:
+                flags.append(f"weak_field:{label}.{field}")
+
+        # Check decision_signal is not generic
+        signal = (report.get("decision_signal") or "").lower()
+        if signal and any(p in signal for p in ["важно", "стоит", "подумайте", "учитывайте"]):
+            flags.append(f"generic_signal:{label}")
+
+    # Check comparison (if multiple reports)
+    comparison = result.get("comparison")
+    if len(reports) > 1 and comparison:
+        for field in _REQUIRED_COMPARISON_FIELDS:
+            val = (comparison.get(field) or "").strip()
+            if len(val) < _MIN_FIELD_LENGTH:
+                flags.append(f"weak_comparison:{field}")
+
+        # Check comparison summary is not diplomatic filler
+        summary = (comparison.get("summary") or "").lower()
+        if summary and any(p in summary for p in [
+            "оба варианта имеют",
+            "у каждого есть",
+            "плюсы и минусы",
+            "зависит от предпочтений",
+        ]):
+            flags.append("diplomatic_comparison")
+
+    # Score
+    if len(flags) == 0:
+        return "high", flags
+    elif len(flags) <= 2:
+        return "medium", flags
+    else:
+        return "low", flags
+
+
+# ── Evidence-backed grounding v2 ───────────────────────────────────
+
+# Semantic synonym groups: bidirectional soft matching
+_SEMANTIC_GROUPS: list[list[str]] = [
+    ["it", "айти", "технологич", "software", "разработк", "программ", "developer", "инженер"],
+    ["финанс", "деньги", "бюджет", "зарплат", "доход", "подушк", "runway", "cash", "накоплен", "сбережен"],
+    ["карьер", "работ", "должност", "позиц", "компани", "увольн", "найм", "оффер", "job", "career"],
+    ["здоровь", "спорт", "режим", "сон", "выгоран", "burnout", "стресс", "нагрузк", "усталост"],
+    ["отношен", "партнер", "семь", "близк", "поддержк", "support", "окружен"],
+    ["образован", "учеб", "магистратур", "курс", "обучен", "навык", "диплом"],
+    ["проект", "стартап", "бизнес", "запуск", "предпринимател", "свое дело"],
+    ["senior", "сеньор", "ведущ", "старш", "lead", "principal"],
+    ["junior", "джуниор", "начинающ", "стажер", "intern"],
+    ["менеджер", "управлен", "руководител", "тимлид", "manager", "lead"],
+]
+
+
+def _semantic_match(text_a: str, text_b: str) -> bool:
+    """Check if two texts share a semantic group (beyond lexical overlap)."""
+    a_norm = _normalize(text_a)
+    b_norm = _normalize(text_b)
+    for group in _SEMANTIC_GROUPS:
+        a_hit = any(term in a_norm for term in group)
+        b_hit = any(term in b_norm for term in group)
+        if a_hit and b_hit:
+            return True
+    return False
+
+
+class EvidenceUnit:
+    """A single piece of user context evidence."""
+    __slots__ = ("source_type", "source_name", "text", "tokens")
+
+    def __init__(self, source_type: str, source_name: str, text: str):
+        self.source_type = source_type  # sphere_fact | known_factor | document_fact | sphere_chat
+        self.source_name = source_name
+        self.text = text
+        self.tokens = set(_tokenize(text))
+
+    def matches(self, output_text: str) -> bool:
+        """Check if this evidence is reflected in output (lexical + semantic)."""
+        out_norm = _normalize(output_text)
+        # Lexical: ≥40% of evidence tokens found in output
+        if self.tokens:
+            hits = sum(1 for t in self.tokens if t in out_norm)
+            if hits / len(self.tokens) >= 0.4:
+                return True
+        # Semantic: evidence and output share a semantic group
+        if _semantic_match(self.text, output_text):
+            return True
+        return False
+
+
+def build_evidence_pack(
+    known_factors: list[str],
+    sphere_names: list[str],
+    doc_snippets: list[dict],  # [{filename, sphere_name, snippet}]
+) -> list[EvidenceUnit]:
+    """Build structured evidence pack from available context."""
+    evidence: list[EvidenceUnit] = []
+    for f in known_factors:
+        if len(f.strip()) > 3:
+            evidence.append(EvidenceUnit("known_factor", "context", f))
+    for s in sphere_names:
+        evidence.append(EvidenceUnit("sphere_fact", s, s))
+    for d in doc_snippets:
+        snippet = d.get("snippet", "")
+        if len(snippet) > 20:
+            evidence.append(EvidenceUnit("document_fact", d.get("filename", "doc"), snippet[:300]))
+    return evidence
+
+
+def validate_workspace_grounding(
+    result: dict,
+    evidence: list[EvidenceUnit],
+) -> dict:
+    """Evidence-backed grounding validation v2.
+
+    Returns dict with:
+      grounding_ok: bool
+      grounding_score: float (0.0 - 1.0)
+      components: {factor_support, sphere_support, document_support}
+      flags: list[str]
+      evidence_used: list[str]  — evidence texts that matched
+      evidence_missed: list[str] — evidence texts that didn't match
+    """
+    if not evidence:
+        return {"grounding_ok": True, "grounding_score": 1.0, "components": {},
+                "flags": [], "evidence_used": [], "evidence_missed": []}
+
+    # Collect key output text
+    key_text = ""
+    for report in result.get("reports", []):
+        for field in ("most_likely_outcome", "primary_bottleneck", "decision_signal",
+                      "non_obvious_insight", "dominant_downside", "condition_that_changes_prediction"):
+            key_text += " " + (report.get(field) or "")
+    comparison = result.get("comparison")
+    if comparison:
+        key_text += " " + (comparison.get("summary") or "")
+        key_text += " " + (comparison.get("hidden_trap") or "")
+
+    # Score each evidence unit
+    used: list[str] = []
+    missed: list[str] = []
+    by_type: dict[str, list[bool]] = {}
+
+    for ev in evidence:
+        matched = ev.matches(key_text)
+        if matched:
+            used.append(ev.text)
+        else:
+            missed.append(ev.text)
+        by_type.setdefault(ev.source_type, []).append(matched)
+
+    # Compute per-type support rates
+    components: dict[str, float] = {}
+    for stype, matches in by_type.items():
+        components[stype] = sum(matches) / len(matches) if matches else 0.0
+
+    # Overall grounding score: weighted average
+    total_matched = len(used)
+    total = len(evidence)
+    grounding_score = total_matched / total if total > 0 else 1.0
+
+    # Flags
+    flags: list[str] = []
+    if grounding_score < 0.15:
+        flags.append(f"detached_from_context:{grounding_score:.2f}")
+    elif grounding_score < 0.3:
+        flags.append(f"weak_grounding:{grounding_score:.2f}")
+
+    if components.get("sphere_fact", 1.0) == 0.0 and len(by_type.get("sphere_fact", [])) > 0:
+        flags.append("no_sphere_reference")
+
+    if components.get("document_fact", 1.0) == 0.0 and len(by_type.get("document_fact", [])) > 0:
+        flags.append("documents_ignored")
+
+    grounding_ok = len(flags) == 0
+
+    return {
+        "grounding_ok": grounding_ok,
+        "grounding_score": round(grounding_score, 2),
+        "components": {k: round(v, 2) for k, v in components.items()},
+        "flags": flags,
+        "evidence_used": used[:10],
+        "evidence_missed": missed[:10],
+    }
+
+
+# ── Claim-level support mapping v1 ─────────────────────────────────
+
+# Fields ranked by decision-criticality (highest first)
+_DECISIVE_FIELDS = ["most_likely_outcome", "primary_bottleneck", "decision_signal"]
+_SECONDARY_FIELDS = ["dominant_downside", "condition_that_changes_prediction", "non_obvious_insight"]
+
+
+class ClaimMapping:
+    """A single claim extracted from a scenario report with its support status."""
+    __slots__ = ("field", "variant_label", "text", "is_decisive",
+                 "supporting_evidence", "support_types", "support_strength")
+
+    def __init__(self, field: str, variant_label: str, text: str, is_decisive: bool):
+        self.field = field
+        self.variant_label = variant_label
+        self.text = text
+        self.is_decisive = is_decisive
+        self.supporting_evidence: list[str] = []  # evidence texts that match
+        self.support_types: set[str] = set()       # source types that match
+        self.support_strength: str = "none"        # none | weak | moderate | strong
+
+    @property
+    def is_unsupported(self) -> bool:
+        return self.support_strength == "none"
+
+    @property
+    def is_weak(self) -> bool:
+        return self.support_strength in ("none", "weak")
+
+    def to_dict(self) -> dict:
+        return {
+            "field": self.field,
+            "variant": self.variant_label,
+            "claim": self.text[:120],
+            "decisive": self.is_decisive,
+            "support": self.support_strength,
+            "support_types": sorted(self.support_types),
+            "evidence_count": len(self.supporting_evidence),
+        }
+
+
+def extract_claims(result: dict) -> list[ClaimMapping]:
+    """Extract key claims from all scenario reports."""
+    claims: list[ClaimMapping] = []
+    for report in result.get("reports", []):
+        label = report.get("variant_label", "?")
+        for field in _DECISIVE_FIELDS:
+            text = (report.get(field) or "").strip()
+            if len(text) >= _MIN_FIELD_LENGTH:
+                claims.append(ClaimMapping(field, label, text, is_decisive=True))
+        for field in _SECONDARY_FIELDS:
+            text = (report.get(field) or "").strip()
+            if len(text) >= _MIN_FIELD_LENGTH:
+                claims.append(ClaimMapping(field, label, text, is_decisive=False))
+    return claims
+
+
+def map_claims_to_evidence(claims: list[ClaimMapping], evidence: list[EvidenceUnit]) -> None:
+    """Match each claim against evidence pack. Mutates claims in-place."""
+    for claim in claims:
+        for ev in evidence:
+            if ev.matches(claim.text):
+                claim.supporting_evidence.append(ev.text[:80])
+                claim.support_types.add(ev.source_type)
+
+        # Determine support strength
+        n = len(claim.supporting_evidence)
+        has_doc = "document_fact" in claim.support_types
+        if n == 0:
+            claim.support_strength = "none"
+        elif n == 1 and not has_doc:
+            claim.support_strength = "weak"
+        elif n <= 2:
+            claim.support_strength = "moderate"
+        else:
+            claim.support_strength = "strong"
+
+
+def validate_claim_support(claims: list[ClaimMapping]) -> dict:
+    """Analyze claim support quality. Returns structured summary."""
+    total = len(claims)
+    if total == 0:
+        return {"ok": True, "flags": [], "summary": {}}
+
+    decisive = [c for c in claims if c.is_decisive]
+    unsupported_decisive = [c for c in decisive if c.is_unsupported]
+    weak_decisive = [c for c in decisive if c.is_weak]
+    supported = [c for c in claims if not c.is_unsupported]
+    doc_supported = [c for c in claims if "document_fact" in c.support_types]
+
+    flags: list[str] = []
+    if unsupported_decisive:
+        names = [f"{c.variant_label}.{c.field}" for c in unsupported_decisive]
+        flags.append(f"unsupported_decisive:{','.join(names[:3])}")
+    if len(weak_decisive) > len(decisive) / 2 and len(decisive) > 0:
+        flags.append("majority_decisive_weak")
+
+    return {
+        "ok": len(unsupported_decisive) == 0,
+        "flags": flags,
+        "summary": {
+            "total_claims": total,
+            "supported": len(supported),
+            "unsupported_decisive": len(unsupported_decisive),
+            "weak_decisive": len(weak_decisive),
+            "doc_supported": len(doc_supported),
+            "support_ratio": round(len(supported) / total, 2) if total > 0 else 0.0,
+        },
+        "claims": [c.to_dict() for c in claims],
+    }
+
+
+def build_claim_correction_packet(
+    claims: list[ClaimMapping], evidence: list[EvidenceUnit],
+) -> str:
+    """Build targeted correction instructions from claim analysis."""
+    lines: list[str] = []
+
+    # Group problem claims by severity
+    unsupported_decisive = [c for c in claims if c.is_decisive and c.is_unsupported]
+    weak_decisive = [c for c in claims if c.is_decisive and c.support_strength == "weak"]
+    unsupported_secondary = [c for c in claims if not c.is_decisive and c.is_unsupported]
+
+    if unsupported_decisive:
+        lines.append("### КРИТИЧНО — Неподтверждённые ключевые выводы (ИСПРАВИТЬ ОБЯЗАТЕЛЬНО):")
+        for c in unsupported_decisive:
+            lines.append(f"  - [{c.variant_label}].{c.field}: \"{c.text[:100]}\"")
+            lines.append(f"    Действие: переформулируй опираясь на evidence, ИЛИ ослабь формулировку, ИЛИ явно укажи зависимость от недостающих данных")
+
+    if weak_decisive:
+        lines.append("### Слабо подтверждённые ключевые выводы (желательно усилить):")
+        for c in weak_decisive:
+            lines.append(f"  - [{c.variant_label}].{c.field}: \"{c.text[:100]}\"")
+            lines.append(f"    Действие: усиль опору через evidence или сделай формулировку менее абсолютной")
+
+    if unsupported_secondary:
+        lines.append("### Неподтверждённые вторичные выводы (можно ослабить):")
+        for c in unsupported_secondary[:3]:  # max 3
+            lines.append(f"  - [{c.variant_label}].{c.field}: \"{c.text[:80]}\"")
+
+    # Show relevant evidence that should be used
+    if evidence:
+        ev_texts = [ev.text[:80] for ev in evidence[:8]]
+        lines.append("\n### Доступный evidence для опоры:")
+        for e in ev_texts:
+            lines.append(f"  • {e}")
+
+    return "\n".join(lines) if lines else ""
+
+
+# ── Confidence Calibration v1 ──────────────────────────────────────
+
+# Evidence type weights for calibration
+_EVIDENCE_WEIGHTS: dict[str, float] = {
+    "document_fact": 1.5,
+    "known_factor": 1.0,
+    "sphere_fact": 0.5,
+    "sphere_chat": 0.7,
+    "memory_fact": 0.8,
+}
+
+
+def calibrate_confidence(
+    report: dict,
+    claim_result: dict,
+    grounding: dict,
+    correction: dict | None,
+    known_factors: list[str],
+    missing_count: int,
+    evidence: list["EvidenceUnit"],
+) -> dict:
+    """Rule-based confidence calibration for a single scenario report.
+
+    Returns {level, reason, limiters, suggestions, inputs}.
+    """
+    # Gather inputs
+    summary = claim_result.get("summary", {})
+    support_ratio = summary.get("support_ratio", 0.0)
+    unsupported_decisive = summary.get("unsupported_decisive", 0)
+    weak_decisive = summary.get("weak_decisive", 0)
+    doc_supported = summary.get("doc_supported", 0)
+    total_claims = summary.get("total_claims", 0)
+    grounding_score = grounding.get("grounding_score", 0.0)
+    n_known = len(known_factors)
+    still_unsup = len((correction or {}).get("still_unsupported", []))
+    n_corrected = len((correction or {}).get("corrected", []))
+    retry_used = correction is not None
+
+    # Evidence quality: weighted score
+    ev_quality = 0.0
+    if evidence:
+        ev_quality = sum(_EVIDENCE_WEIGHTS.get(ev.source_type, 0.5) for ev in evidence) / len(evidence)
+
+    # Has strong evidence types?
+    has_doc_evidence = any(ev.source_type == "document_fact" for ev in evidence)
+    has_semantic_only = grounding_score > 0.3 and not any(
+        ev.source_type in ("document_fact", "known_factor") for ev in evidence if ev.matches(
+            " ".join((report.get(f) or "") for f in _DECISIVE_FIELDS)
+        )
+    )
+
+    # ── Rule engine ──
+    level = "high"  # start optimistic, cap down
+    limiters: list[str] = []
+    suggestions: list[str] = []
+
+    # Hard caps
+    if still_unsup > 0:
+        level = "low"
+        limiters.append(f"{still_unsup} ключевых вывод(а/ов) не подтверждены даже после correction")
+        suggestions.append("Добавьте конкретные факты в релевантные сферы")
+
+    if unsupported_decisive > 0 and not retry_used:
+        level = "low"
+        limiters.append(f"{unsupported_decisive} ключевых вывод(а/ов) без опоры на контекст")
+
+    if grounding_score < 0.15:
+        level = "low"
+        limiters.append("Прогноз слабо связан с вашими данными")
+        suggestions.append("Расскажите больше о ситуации в сферах")
+
+    # Medium caps
+    if level != "low":
+        if n_known < 3:
+            if level == "high":
+                level = "medium"
+            limiters.append(f"Мало фактов ({n_known}) — прогноз опирается на ограниченные данные")
+            suggestions.append("Добавьте больше фактов о вашей ситуации")
+
+        if missing_count > 5:
+            if level == "high":
+                level = "medium"
+            limiters.append(f"Много пробелов в контексте ({missing_count})")
+
+        if support_ratio < 0.4:
+            level = "low"
+            limiters.append(f"Только {int(support_ratio*100)}% выводов подтверждены контекстом")
+        elif support_ratio < 0.6:
+            if level == "high":
+                level = "medium"
+            limiters.append(f"{int(support_ratio*100)}% выводов подтверждены — есть пробелы")
+
+        if weak_decisive > 0 and unsupported_decisive == 0:
+            if level == "high":
+                level = "medium"
+            limiters.append(f"{weak_decisive} ключевых вывод(а/ов) подтверждены слабо")
+
+        if has_semantic_only:
+            if level == "high":
+                level = "medium"
+            limiters.append("Связь с контекстом преимущественно косвенная")
+
+        # Coarse claim granularity cap: if decisive fields are long and treated as single claim
+        for f in _DECISIVE_FIELDS:
+            val = report.get(f, "")
+            if isinstance(val, str) and len(val) > 200 and level == "high":
+                level = "medium"
+                limiters.append("Составные выводы проверены укрупнённо")
+                break
+
+    # Positive signals (can promote from medium to high, never from low)
+    if level == "medium":
+        promoted = False
+        if support_ratio >= 0.7 and n_known >= 5 and unsupported_decisive == 0:
+            level = "high"
+            promoted = True
+        if doc_supported > 0 and support_ratio >= 0.6 and not promoted:
+            level = "high"
+            promoted = True
+        if n_corrected > 0 and still_unsup == 0 and support_ratio >= 0.5 and not promoted:
+            level = "high"
+
+    # Document bump: add positive note but don't magically elevate
+    if has_doc_evidence and doc_supported > 0:
+        if not suggestions:
+            pass  # already strong
+        limiters_note = f"Документы подтверждают {doc_supported} вывод(а/ов)"
+        if limiters_note not in limiters:
+            limiters.append(limiters_note)
+
+    # Failed retry penalty
+    if retry_used and still_unsup > 0:
+        if level == "medium":
+            level = "low"
+        limiters.append("Targeted correction не смог подтвердить все ключевые выводы")
+
+    # Build reason
+    if level == "high":
+        reason = "Ключевые выводы подтверждены контекстом"
+        if doc_supported > 0:
+            reason += " и документами"
+        reason += f" ({int(support_ratio*100)}% support)"
+    elif level == "medium":
+        reason = ". ".join(limiters[:2]) if limiters else "Контекст частичный"
+    else:
+        reason = ". ".join(limiters[:2]) if limiters else "Недостаточно данных"
+
+    return {
+        "level": level,
+        "reason": reason,
+        "limiters": limiters[:5],
+        "suggestions": suggestions[:3],
+        "inputs": {
+            "support_ratio": round(support_ratio, 2),
+            "grounding_score": round(grounding_score, 2),
+            "known_factors": n_known,
+            "missing_count": missing_count,
+            "unsupported_decisive": unsupported_decisive,
+            "still_unsupported": still_unsup,
+            "doc_supported": doc_supported,
+            "ev_quality": round(ev_quality, 2),
+        },
+    }
+
+
+_CORRECTION_PROMPT = """Предыдущий ответ содержит проблемы quality. Исправь его.
+
+## Проблемы найденные в ответе:
+{issues}
+
+## Контекст пользователя для привязки:
+{grounding_context}
+
+{claim_corrections}
+
+## Правила исправления:
+1. Убери ВСЕ generic фразы ("важно учитывать", "стоит обратить внимание" и подобные)
+2. Каждое пустое или слабое поле заполни КОНКРЕТНЫМ содержанием
+3. decision_signal — короткий вердикт ("Сильный при X" / "Слабый без Y"), НЕ совет
+
+### Правила для неподтверждённых claims:
+4. Если claim НЕПОДТВЕРЖДЁН и есть релевантный evidence — переформулируй, опираясь на evidence
+5. Если claim НЕПОДТВЕРЖДЁН и evidence недостаточен — ОСЛАБЬ формулировку (добавь "при условии", "если", "вероятно")
+6. Если claim НЕЛЬЗЯ честно подтвердить — замени на явное указание зависимости: "Зависит от [конкретного факта]" или "Требует уточнения [чего именно]"
+7. НЕ повторяй сильные утверждения без опоры. Лучше честно слабый claim, чем fake-confident.
+8. ОБЯЗАТЕЛЬНО используй данные из evidence: known factors, сферы, документы.
+
+## Предыдущий ответ (JSON):
+{previous_output}
+
+Верни ИСПРАВЛЕННЫЙ JSON. Только валидный JSON, без markdown, без ```:
+"""
+
+
 _QUESTION_TYPES = {
     "decision": "Вопрос о конкретном выборе / решении",
     "trajectory": "Вопрос о текущей траектории / к чему ведёт",
@@ -160,7 +753,7 @@ class PredictionQueryAgent:
         """Full prediction pipeline: classify → context → search → synthesize."""
 
         question_type = await self._classify_question(question)
-        personal_context, _, _ = await self._gather_context(user_id, sphere_id, question)
+        personal_context, _, _, _ = await self._gather_context(user_id, sphere_id, question)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize(
@@ -336,20 +929,20 @@ class PredictionQueryAgent:
             parts.append(zep_context)
 
         # Document context from uploaded files
-        doc_context, doc_names = await self._gather_document_context(
+        doc_context, doc_names, doc_snippets = await self._gather_document_context(
             user_id, context_spheres, question, variants or [],
         )
         if doc_context:
             parts.append(doc_context)
 
         context = "\n".join(parts) if parts else "Контекст пока минимален."
-        return context, [s["name"] for s in context_spheres], doc_names
+        return context, [s["name"] for s in context_spheres], doc_names, doc_snippets
 
     async def _gather_context_with_spheres(
         self, user_id: str, sphere_id: str | None, question: str,
         variants: list[str] | None = None,
-    ) -> tuple[str, list[str], list[str]]:
-        """Wrapper that returns (context_text, used_sphere_names, used_doc_names)."""
+    ) -> tuple[str, list[str], list[str], list[dict]]:
+        """Wrapper that returns (context_text, used_sphere_names, used_doc_names, doc_snippets)."""
         return await self._gather_context(user_id, sphere_id, question, variants)
 
     async def _gather_sphere_chat_context(
@@ -438,14 +1031,19 @@ class PredictionQueryAgent:
         context_spheres: list[dict],
         question: str,
         variants: list[str],
-    ) -> tuple[str, list[str]]:
-        """Pull extracted text from sphere documents. Returns (context_str, doc_filenames)."""
+    ) -> tuple[str, list[str], list[dict]]:
+        """Pull extracted text from sphere documents.
+
+        Returns (context_str, doc_filenames, doc_snippets_for_evidence).
+        doc_snippets: [{filename, sphere_name, snippet}] for grounding checks.
+        """
         if not self.docs or not context_spheres:
-            return "", []
+            return "", [], []
 
         q_tokens = _tokenize(question + " " + " ".join(variants))
         doc_parts: list[str] = []
         doc_names: list[str] = []
+        doc_snippets: list[dict] = []
 
         for s in context_spheres:
             try:
@@ -463,20 +1061,25 @@ class PredictionQueryAgent:
                     doc_lower = _normalize(text[:2000])
                     relevance = sum(1 for t in q_tokens if t in doc_lower) / max(len(q_tokens), 1)
 
-                    # Include doc if any relevance or sphere is explicitly relevant
                     excerpt = text[:800] if relevance > 0.1 else text[:400]
                     status_note = " (частично извлечён)" if doc["status"] == "limited" else ""
                     doc_parts.append(
                         f"  📄 {doc['filename']}{status_note} [{s['name']}]:\n    {excerpt}"
                     )
                     doc_names.append(doc["filename"])
+                    # Save snippet for evidence grounding (first 300 chars of content)
+                    doc_snippets.append({
+                        "filename": doc["filename"],
+                        "sphere_name": s["name"],
+                        "snippet": text[:300],
+                    })
             except Exception:
                 logger.warning("Failed to fetch docs for sphere %s", s["id"], exc_info=True)
                 continue
 
         if not doc_parts:
-            return "", []
-        return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names
+            return "", [], []
+        return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names, doc_snippets
 
     # ── Step 3: External knowledge retrieval ──────────────────────────
 
@@ -788,11 +1391,13 @@ class PredictionQueryAgent:
         if not variants:
             variants = await self._generate_variants(question, question_type)
 
-        personal_context, used_sphere_names, used_doc_names = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+        personal_context, used_sphere_names, used_doc_names, doc_snippets = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize_workspace(
             question, question_type, personal_context, external_context, variants,
+            sphere_names=used_sphere_names, doc_names=used_doc_names,
+            doc_snippets=doc_snippets,
         )
 
         result["question"] = question
@@ -832,6 +1437,9 @@ class PredictionQueryAgent:
         personal_context: str,
         external_context: str,
         variants: list[str],
+        sphere_names: list[str] | None = None,
+        doc_names: list[str] | None = None,
+        doc_snippets: list[dict] | None = None,
     ) -> dict:
         variants_text = "\n".join(f"- {v}" for v in variants)
         prompt = (
@@ -843,19 +1451,133 @@ class PredictionQueryAgent:
             .replace("{variants}", variants_text)
         )
 
+        sphere_names = sphere_names or []
+        doc_names = doc_names or []
+        doc_snippets = doc_snippets or []
+
         try:
-            resp = await self.ai.chat.completions.create(
-                model=AI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000,
-                temperature=0.4,
-            )
-            raw = resp.choices[0].message.content.strip()
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1:
-                raw = raw[start:end + 1]
-            return json.loads(raw)
+            result = await self._call_workspace_llm(prompt)
+
+            # Build evidence pack from available context
+            known_factors = result.get("context_completeness", {}).get("known_factors", [])
+            evidence = build_evidence_pack(known_factors, sphere_names, doc_snippets)
+
+            # 1. Quality guardrails (genericness + sharpness)
+            quality_score, quality_flags = validate_workspace_quality(result)
+
+            # 2. Grounding guardrails v2 (evidence-backed)
+            grounding = validate_workspace_grounding(result, evidence)
+            grounding_flags = grounding["flags"]
+
+            # 3. Claim-level support mapping
+            claims = extract_claims(result)
+            map_claims_to_evidence(claims, evidence)
+            claim_result = validate_claim_support(claims)
+            claim_flags = claim_result["flags"]
+
+            all_flags = quality_flags + grounding_flags + claim_flags
+
+            # Determine combined score (claim-aware)
+            has_unsupported_decisive = any("unsupported_decisive" in f for f in claim_flags)
+            if quality_score == "low" or any("detached" in f for f in grounding_flags):
+                combined_score = "low"
+            elif has_unsupported_decisive:
+                combined_score = "low"  # unsupported decisive claim = always low
+            elif len(all_flags) <= 2:
+                combined_score = quality_score
+            else:
+                combined_score = "medium" if quality_score == "high" else quality_score
+
+            # 4. Corrective retry if combined is low — now claim-aware
+            retry_used = False
+            pre_retry_unsupported: list[str] = []
+            corrected_claims: list[str] = []
+            still_unsupported: list[str] = []
+
+            if combined_score == "low" and all_flags:
+                # Capture pre-retry unsupported decisive claims
+                pre_retry_unsupported = [
+                    f"{c.variant_label}.{c.field}" for c in claims
+                    if c.is_decisive and c.is_unsupported
+                ]
+
+                logger.info("Claim-aware correction triggered (%d flags, %d unsupported decisive), retrying",
+                            len(all_flags), len(pre_retry_unsupported))
+
+                grounding_context = self._build_grounding_reminder(known_factors, sphere_names, doc_names)
+                claim_packet = build_claim_correction_packet(claims, evidence)
+
+                corrected = await self._retry_workspace_correction(
+                    result, all_flags, grounding_context, claim_packet,
+                )
+                if corrected:
+                    result = corrected
+                    retry_used = True
+                    new_known = result.get("context_completeness", {}).get("known_factors", [])
+                    evidence = build_evidence_pack(new_known, sphere_names, doc_snippets)
+                    quality_score, quality_flags = validate_workspace_quality(result)
+                    grounding = validate_workspace_grounding(result, evidence)
+                    grounding_flags = grounding["flags"]
+                    claims = extract_claims(result)
+                    map_claims_to_evidence(claims, evidence)
+                    claim_result = validate_claim_support(claims)
+                    claim_flags = claim_result["flags"]
+                    all_flags = quality_flags + grounding_flags + claim_flags
+                    has_unsupported_decisive = any("unsupported_decisive" in f for f in claim_flags)
+
+                    # Track which claims were fixed vs still unsupported
+                    post_unsupported = {
+                        f"{c.variant_label}.{c.field}" for c in claims
+                        if c.is_decisive and c.is_unsupported
+                    }
+                    corrected_claims = [c for c in pre_retry_unsupported if c not in post_unsupported]
+                    still_unsupported = [c for c in pre_retry_unsupported if c in post_unsupported]
+
+                    if len(all_flags) == 0:
+                        combined_score = "high"
+                    elif has_unsupported_decisive:
+                        combined_score = "low"
+                    elif len(all_flags) <= 2:
+                        combined_score = "medium"
+                    else:
+                        combined_score = "low"
+
+            # 5. Confidence calibration v1
+            missing_count = len(result.get("context_completeness", {}).get("missing", []))
+            correction_meta = {
+                "corrected": corrected_claims,
+                "still_unsupported": still_unsupported,
+            } if retry_used else None
+
+            for report in result.get("reports", []):
+                cal = calibrate_confidence(
+                    report, claim_result, grounding, correction_meta,
+                    known_factors, missing_count, evidence,
+                )
+                # Override LLM confidence with calibrated value
+                report["confidence"] = cal["level"]
+                report["confidence_reason"] = cal["reason"]
+                report["_calibration"] = cal
+
+            result["_quality"] = {
+                "score": combined_score,
+                "flags": all_flags,
+                "retry_used": retry_used,
+                "genericness_ok": len(quality_flags) == 0,
+                "grounding_ok": grounding["grounding_ok"],
+                "grounding_score": grounding["grounding_score"],
+                "grounding_components": grounding["components"],
+                "evidence_used": grounding["evidence_used"],
+                "evidence_missed": grounding["evidence_missed"],
+                "claim_support": claim_result["summary"],
+                "claims": claim_result.get("claims", [])[:8],
+                "correction": {
+                    "targeted_claims": pre_retry_unsupported,
+                    "corrected": corrected_claims,
+                    "still_unsupported": still_unsupported,
+                } if retry_used else None,
+            }
+            return result
         except Exception:
             logger.warning("Workspace synthesis failed", exc_info=True)
             return {
@@ -864,7 +1586,78 @@ class PredictionQueryAgent:
                 "reports": [],
                 "comparison": None,
                 "external_insights": "",
+                "_quality": {"score": "low", "flags": ["synthesis_failed"], "retry_used": False,
+                             "genericness_ok": False, "grounding_ok": False,
+                             "grounding_score": 0.0, "grounding_components": {},
+                             "evidence_used": [], "evidence_missed": [],
+                             "claim_support": {}, "claims": []},
             }
+
+    async def _call_workspace_llm(self, prompt: str) -> dict:
+        """Call LLM and parse JSON response."""
+        resp = await self.ai.chat.completions.create(
+            model=AI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4000,
+            temperature=0.4,
+        )
+        raw = resp.choices[0].message.content.strip()
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1:
+            raw = raw[start:end + 1]
+        return json.loads(raw)
+
+    @staticmethod
+    def _build_grounding_reminder(
+        known_factors: list[str], sphere_names: list[str], doc_names: list[str],
+    ) -> str:
+        """Build compact context reminder for correction prompt."""
+        parts = []
+        if known_factors:
+            parts.append(f"Known factors: {', '.join(known_factors[:10])}")
+        if sphere_names:
+            parts.append(f"Сферы: {', '.join(sphere_names)}")
+        if doc_names:
+            parts.append(f"Документы: {', '.join(doc_names)}")
+        return "\n".join(parts) if parts else "Контекст минимален."
+
+    async def _retry_workspace_correction(
+        self, previous: dict, flags: list[str],
+        grounding_context: str = "",
+        claim_packet: str = "",
+    ) -> dict | None:
+        """One corrective retry with claim-aware correction instructions."""
+        issues_text = "\n".join(f"- {f}" for f in flags)
+        prev_json = json.dumps(previous, ensure_ascii=False, indent=2)
+
+        if len(prev_json) > 8000:
+            prev_json = prev_json[:8000] + "\n... (truncated)"
+
+        correction_prompt = (
+            _CORRECTION_PROMPT
+            .replace("{issues}", issues_text)
+            .replace("{previous_output}", prev_json)
+            .replace("{grounding_context}", grounding_context or "Контекст минимален.")
+            .replace("{claim_corrections}", claim_packet or "")
+        )
+
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": correction_prompt}],
+                max_tokens=4000,
+                temperature=0.3,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1:
+                raw = raw[start:end + 1]
+            return json.loads(raw)
+        except Exception:
+            logger.warning("Quality correction retry failed", exc_info=True)
+            return None
 
     # ── Step 4: Synthesis (legacy single-answer) ────────────────────
 

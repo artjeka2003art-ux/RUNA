@@ -101,6 +101,13 @@ export interface LeverageFactor {
   weight: "high" | "medium" | "low";
 }
 
+export interface ConfidenceCalibration {
+  level: "low" | "medium" | "high";
+  reason: string;
+  limiters: string[];
+  suggestions: string[];
+}
+
 export interface ScenarioReport {
   variant_label: string;
   most_likely_outcome: string;
@@ -117,6 +124,7 @@ export interface ScenarioReport {
   affected_spheres: string[];
   depends_on: string;
   next_step: string;
+  _calibration?: ConfidenceCalibration;
 }
 
 export interface ScenarioComparison {
@@ -127,6 +135,46 @@ export interface ScenarioComparison {
   most_sensitive_factor: string;
   hidden_trap: string;
   ranking_variable: string;
+}
+
+export interface ClaimSupport {
+  field: string;
+  variant: string;
+  claim: string;
+  decisive: boolean;
+  support: "none" | "weak" | "moderate" | "strong";
+  support_types: string[];
+  evidence_count: number;
+}
+
+export interface ClaimSupportSummary {
+  total_claims?: number;
+  supported?: number;
+  unsupported_decisive?: number;
+  weak_decisive?: number;
+  doc_supported?: number;
+  support_ratio?: number;
+}
+
+export interface CorrectionResult {
+  targeted_claims: string[];
+  corrected: string[];
+  still_unsupported: string[];
+}
+
+export interface PredictionQuality {
+  score: "low" | "medium" | "high";
+  flags: string[];
+  retry_used: boolean;
+  genericness_ok?: boolean;
+  grounding_ok?: boolean;
+  grounding_score?: number;
+  grounding_components?: Record<string, number>;
+  evidence_used?: string[];
+  evidence_missed?: string[];
+  claim_support?: ClaimSupportSummary;
+  claims?: ClaimSupport[];
+  correction?: CorrectionResult | null;
 }
 
 export interface WorkspaceResult {
@@ -141,6 +189,7 @@ export interface WorkspaceResult {
   sources: { title: string; url: string; domain: string }[];
   context_spheres_used?: string[];
   documents_used?: string[];
+  _quality?: PredictionQuality;
 }
 
 export async function sendWorkspaceQuery(
