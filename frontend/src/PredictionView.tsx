@@ -10,6 +10,7 @@ import {
   type MissingContextItem,
   type PredictionQuality,
 } from "./api";
+import type { DecisionBridge } from "./App";
 
 // ── Workspace state persistence ──
 
@@ -397,6 +398,8 @@ interface PredictionViewProps {
   onCreateSphereAndNavigate?: (sphereName: string, ctx: WorkspaceSphereContext) => void;
   returnedFromSphere?: boolean;
   onClearReturned?: () => void;
+  decisionBridge?: DecisionBridge | null;
+  onClearBridge?: () => void;
 }
 
 export default function PredictionView({
@@ -405,6 +408,8 @@ export default function PredictionView({
   onCreateSphereAndNavigate,
   returnedFromSphere,
   onClearReturned,
+  decisionBridge,
+  onClearBridge,
 }: PredictionViewProps) {
   const [question, setQuestion] = useState("");
   const [variants, setVariants] = useState<string[]>([""]);
@@ -413,6 +418,7 @@ export default function PredictionView({
   const [diff, setDiff] = useState<DiffItem[] | null>(null);
   const [spheres, setSpheres] = useState<SphereRef[]>([]);
   const [contextUpdated, setContextUpdated] = useState(false);
+  const [bridgeActive, setBridgeActive] = useState(false);
 
   // Load spheres
   useEffect(() => {
@@ -426,8 +432,21 @@ export default function PredictionView({
     }).catch(() => {});
   }, [userId]);
 
-  // Restore from sessionStorage
+  // Apply decision bridge from onboarding (takes priority over saved state)
   useEffect(() => {
+    if (decisionBridge && decisionBridge.draft_question) {
+      setQuestion(decisionBridge.draft_question);
+      setVariants(
+        decisionBridge.draft_variants.length > 0
+          ? decisionBridge.draft_variants
+          : [""],
+      );
+      setResult(null);
+      setBridgeActive(true);
+      onClearBridge?.();
+      return;
+    }
+    // Restore from localStorage only if no bridge
     const saved = loadWorkspaceState();
     if (saved) {
       setQuestion(saved.question);
@@ -542,6 +561,18 @@ export default function PredictionView({
         <p className="ws-subtitle">Смоделируй варианты решения и сравни последствия</p>
       </div>
 
+      {/* Decision bridge banner */}
+      {bridgeActive && !result && (
+        <div className="ws-bridge-banner">
+          <div className="ws-bridge-text">
+            <strong>Первая развилка из онбординга</strong>
+            <span>{decisionBridge?.bridge_reason || "Мы нашли главную развилку в вашей жизни — начнём с неё."}</span>
+          </div>
+          <p className="ws-bridge-hint">Это стартовый draft — можете отредактировать вопрос и варианты перед запуском.</p>
+          <button className="ws-bridge-dismiss" onClick={() => setBridgeActive(false)}>Понятно</button>
+        </div>
+      )}
+
       {/* Context updated banner */}
       {contextUpdated && result && (
         <div className="ws-updated-banner">
@@ -609,8 +640,19 @@ export default function PredictionView({
       {/* Results */}
       {result && !loading && (
         <div className="ws-results">
-          {/* Diff block — shown after re-run */}
+          {/* Diff block — shown after re-run with confidence headline */}
           {diff && diff.length > 0 && <DiffBlock items={diff} />}
+          {diff && diff.length > 0 && (() => {
+            const confItem = diff.find((d) => d.text.includes("Полнота контекста:"));
+            if (!confItem) return null;
+            const improved = confItem.type === "positive";
+            return (
+              <div className={`ws-confidence-headline ${improved ? "ws-conf-up" : "ws-conf-same"}`}>
+                {improved ? "Прогноз стал увереннее" : "Контекст обновлён"}
+                <span className="ws-confidence-headline-detail">{confItem.text}</span>
+              </div>
+            );
+          })()}
 
           {/* Type + restated question */}
           <div className="ws-result-header">

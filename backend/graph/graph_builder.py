@@ -154,3 +154,19 @@ class GraphBuilder:
     async def update_sphere_description(self, user_id: str, sphere_id: str, description: str) -> dict | None:
         rows = await self._run(*graph_queries.update_sphere_description(user_id, sphere_id, description))
         return rows[0] if rows else None
+
+    async def get_sphere_structured_data(self, user_id: str, sphere_id: str) -> dict:
+        rows = await self._run(*graph_queries.get_sphere_structured_data(user_id, sphere_id))
+        if rows and rows[0].get("structured_data"):
+            import json
+            try:
+                return json.loads(rows[0]["structured_data"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {}
+
+    async def save_sphere_structured_data(self, user_id: str, sphere_id: str, data: dict) -> bool:
+        import json
+        raw = json.dumps(data, ensure_ascii=False)
+        rows = await self._run(*graph_queries.update_sphere_structured_data(user_id, sphere_id, raw))
+        return len(rows) > 0

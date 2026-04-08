@@ -1128,6 +1128,31 @@ class PredictionQueryAgent:
             except Exception:
                 logger.warning("Failed to fetch sphere detail %s", sphere_id, exc_info=True)
 
+        # Structured sphere data (quick facts)
+        for cs in context_spheres:
+            try:
+                cs_id = cs.get("id") or cs.get("sphere_id", "")
+                if not cs_id:
+                    continue
+                from backend.graph import graph_queries as gq
+                q_sd, p_sd = gq.get_sphere_structured_data(user_id, cs_id)
+                sd_rows = await self.graph.execute_query(q_sd, p_sd)
+                if sd_rows and sd_rows[0].get("structured_data"):
+                    import json as _json
+                    try:
+                        sd = _json.loads(sd_rows[0]["structured_data"])
+                        if sd:
+                            lines = [f"\nСтруктурированные данные — {cs.get('name', '')}:"]
+                            for k, v in sd.items():
+                                if v:
+                                    lines.append(f"  {k}: {v}")
+                            if len(lines) > 1:
+                                parts.append("\n".join(lines))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         # Graph entities: blockers, patterns, goals, values
         for label, cypher_label in [("Блокеры", "Blocker"), ("Паттерны", "Pattern")]:
             try:

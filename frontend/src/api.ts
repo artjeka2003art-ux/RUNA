@@ -12,12 +12,18 @@ export async function startOnboarding(userId: string) {
 export async function sendOnboardingMessage(
   userId: string,
   sessionId: string,
-  message: string
+  message: string,
+  forceComplete: boolean = false,
 ) {
   const res = await fetch(`${BASE}/onboarding/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, session_id: sessionId, message }),
+    body: JSON.stringify({
+      user_id: userId,
+      session_id: sessionId,
+      message,
+      force_complete: forceComplete,
+    }),
   });
   return res.json();
 }
@@ -290,11 +296,26 @@ export async function deleteSphere(userId: string, sphereId: string) {
   return res.json();
 }
 
-export async function sendSphereMessage(userId: string, sphereId: string, message: string) {
+export interface EnrichmentContextPayload {
+  missing_what: string;
+  missing_why: string;
+  question: string;
+}
+
+export async function sendSphereMessage(
+  userId: string,
+  sphereId: string,
+  message: string,
+  enrichmentContext?: EnrichmentContextPayload | null,
+) {
+  const body: Record<string, unknown> = { user_id: userId, message };
+  if (enrichmentContext) {
+    body.enrichment_context = enrichmentContext;
+  }
   const res = await fetch(`${BASE}/spheres/${sphereId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, message }),
+    body: JSON.stringify(body),
   });
   return res.json();
 }
@@ -328,6 +349,22 @@ export async function uploadSphereDocument(userId: string, sphereId: string, fil
 export async function deleteSphereDocument(userId: string, sphereId: string, docId: string) {
   const res = await fetch(`${BASE}/spheres/${sphereId}/documents/${docId}?user_id=${userId}`, {
     method: "DELETE",
+  });
+  return res.json();
+}
+
+// ── Structured Sphere Data ──
+
+export async function getSphereStructuredData(userId: string, sphereId: string) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}/structured-data?user_id=${userId}`);
+  return res.json();
+}
+
+export async function saveSphereStructuredData(userId: string, sphereId: string, data: Record<string, string>) {
+  const res = await fetch(`${BASE}/spheres/${sphereId}/structured-data`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, data }),
   });
   return res.json();
 }

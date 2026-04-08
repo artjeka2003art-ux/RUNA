@@ -24,6 +24,7 @@ class OnboardingMessage(BaseModel):
     user_id: str
     session_id: str
     message: str
+    force_complete: bool = False
 
 
 class OnboardingResult(BaseModel):
@@ -109,9 +110,17 @@ class SphereRename(BaseModel):
     name: str
 
 
+class EnrichmentContext(BaseModel):
+    """Context passed from Decision Workspace when user enters sphere to fill a gap."""
+    missing_what: str = ""
+    missing_why: str = ""
+    question: str = ""
+
+
 class SphereMessageRequest(BaseModel):
     user_id: str
     message: str
+    enrichment_context: EnrichmentContext | None = None
 
 
 class SphereMessageResponse(BaseModel):

@@ -8,7 +8,10 @@ import {
   uploadSphereDocument,
   deleteSphereDocument,
   getEnrichmentPrompts,
+  getSphereStructuredData,
+  saveSphereStructuredData,
   type SphereDocument,
+  type EnrichmentContextPayload,
 } from "./api";
 
 interface RelatedNode {
@@ -131,6 +134,66 @@ function getGuidedPrompts(
   };
 }
 
+// ── Structured input schemas per domain ──
+
+interface FieldDef {
+  key: string;
+  label: string;
+  placeholder: string;
+  type: "text" | "select";
+  options?: string[];
+}
+
+const DOMAIN_FIELDS: Record<string, { title: string; fields: FieldDef[] }> = {
+  "финанс": {
+    title: "Финансовые параметры",
+    fields: [
+      { key: "cushion_months", label: "Подушка безопасности", placeholder: "напр. 6 месяцев", type: "text" },
+      { key: "monthly_expenses", label: "Обязательные расходы / мес", placeholder: "напр. 80 000 ₽", type: "text" },
+      { key: "income_stability", label: "Стабильность дохода", placeholder: "", type: "select", options: ["Стабильный", "Нестабильный", "Нет дохода"] },
+      { key: "debts", label: "Долги / кредиты", placeholder: "", type: "select", options: ["Нет", "Есть, управляемые", "Есть, критичные"] },
+      { key: "extra_income", label: "Доп. источники дохода", placeholder: "Если есть — какие", type: "text" },
+    ],
+  },
+  "карьер": {
+    title: "Рабочие параметры",
+    fields: [
+      { key: "role", label: "Текущая роль", placeholder: "напр. product manager", type: "text" },
+      { key: "work_format", label: "Формат работы", placeholder: "", type: "select", options: ["Офис", "Удалёнка", "Гибрид", "Фриланс", "Свой бизнес"] },
+      { key: "workload", label: "Уровень нагрузки", placeholder: "", type: "select", options: ["Нормальная", "Высокая", "Перегруз", "Критическая"] },
+      { key: "decision_horizon", label: "Горизонт решения", placeholder: "напр. 2 месяца", type: "text" },
+      { key: "alternatives", label: "Есть ли альтернативы / офферы", placeholder: "напр. есть оффер от X", type: "text" },
+    ],
+  },
+  "режим": {
+    title: "Режим и нагрузка",
+    fields: [
+      { key: "sleep_hours", label: "Средний сон", placeholder: "напр. 6 часов", type: "text" },
+      { key: "fatigue", label: "Уровень усталости", placeholder: "", type: "select", options: ["Нормальный", "Повышенный", "Сильная усталость", "Выгорание"] },
+      { key: "recovery", label: "Есть ли восстановление", placeholder: "", type: "select", options: ["Да, регулярно", "Иногда", "Почти нет"] },
+      { key: "work_hours", label: "Часов работы в день", placeholder: "напр. 10", type: "text" },
+      { key: "overload_duration", label: "Как давно в таком режиме", placeholder: "напр. 3 месяца", type: "text" },
+    ],
+  },
+  "здоровь": {
+    title: "Здоровье",
+    fields: [
+      { key: "sleep_hours", label: "Средний сон", placeholder: "напр. 7 часов", type: "text" },
+      { key: "condition_duration", label: "Как давно текущее состояние", placeholder: "напр. 2 месяца", type: "text" },
+      { key: "treatment", label: "Есть ли лечение / диагноз", placeholder: "", type: "select", options: ["Нет", "Да, под контролем", "Да, без контроля"] },
+      { key: "routine_stability", label: "Устойчивость режима", placeholder: "", type: "select", options: ["Стабильный", "Нестабильный", "Хаотичный"] },
+    ],
+  },
+};
+
+function matchDomainFields(sphereName: string): { title: string; fields: FieldDef[] } | null {
+  const norm = sphereName.toLowerCase().replace(/[ёЁ]/g, "е");
+  for (const [domain, schema] of Object.entries(DOMAIN_FIELDS)) {
+    if (norm.includes(domain)) return schema;
+  }
+  return null;
+}
+
 // ── Enrichment persistence ──
 const ENRICHMENT_KEY = "runa_enrichment_ctx";
 const ENRICHMENT_TTL = 24 * 60 * 60 * 1000; // 24 hours
@@ -184,6 +247,9 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   const bottom = useRef<HTMLDivElement>(null);
   const [adaptivePrompts, setAdaptivePrompts] = useState<string[] | null>(null);
   const [promptsLoading, setPromptsLoading] = useState(false);
+  const [structuredData, setStructuredData] = useState<Record<string, string>>({});
+  const [structuredSaving, setStructuredSaving] = useState(false);
+  const [structuredSaved, setStructuredSaved] = useState(false);
 
   // Persist enrichment context when entering from workspace
   useEffect(() => {
@@ -200,8 +266,36 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   useEffect(() => {
     loadSphere();
     loadDocs();
+    loadStructuredData();
     setAdaptivePrompts(null);
   }, [userId, sphereId]);
+
+  async function loadStructuredData() {
+    try {
+      const res = await getSphereStructuredData(userId, sphereId);
+      if (res.success && res.data?.structured_data) {
+        setStructuredData(res.data.structured_data);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function handleSaveStructured() {
+    setStructuredSaving(true);
+    setStructuredSaved(false);
+    try {
+      const res = await saveSphereStructuredData(userId, sphereId, structuredData);
+      if (res.success) {
+        setStructuredSaved(true);
+        setTimeout(() => setStructuredSaved(false), 3000);
+      }
+    } catch { /* ignore */ }
+    setStructuredSaving(false);
+  }
+
+  function updateField(key: string, value: string) {
+    setStructuredData((prev) => ({ ...prev, [key]: value }));
+    setStructuredSaved(false);
+  }
 
   // Fetch adaptive prompts for non-standard spheres
   useEffect(() => {
@@ -247,8 +341,19 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
     setMessages((m) => [...m, { role: "user", text }]);
     setSending(true);
 
+    // Pass enrichment context only for first 2 user messages — after that the gap is likely filled
+    const userMsgCount = messages.filter((m) => m.role === "user").length; // before this message
+    const enrichPayload: EnrichmentContextPayload | null =
+      effectiveWsCtx && userMsgCount < 2
+        ? {
+            missing_what: effectiveWsCtx.missingWhat,
+            missing_why: effectiveWsCtx.missingWhy,
+            question: effectiveWsCtx.question || "",
+          }
+        : null;
+
     try {
-      const res = await sendSphereMessage(userId, sphereId, text);
+      const res = await sendSphereMessage(userId, sphereId, text, enrichPayload);
       if (res.success) {
         setMessages((m) => [
           ...m,
@@ -403,7 +508,7 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
         </div>
       )}
 
-      {/* Header */}
+      {/* Header — compact in enrichment mode */}
       <div className="sphere-detail-header">
         <button className="sphere-back-btn" onClick={handleBack}>
           &larr; {effectiveWsCtx ? "Decision Workspace" : "Life Map"}
@@ -434,138 +539,207 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
           )}
         </div>
 
-        {sphere.description && (
-          <p className="sphere-detail-desc">{sphere.description}</p>
-        )}
-        {!sphere.description && (
-          <p className="sphere-detail-desc sphere-detail-desc-empty">
-            Начни разговор ниже — Runa опишет смысл этой сферы.
-          </p>
-        )}
+        {/* Hide description and actions in enrichment mode — focus on context capture */}
+        {!effectiveWsCtx && (
+          <>
+            {sphere.description && (
+              <p className="sphere-detail-desc">{sphere.description}</p>
+            )}
+            {!sphere.description && (
+              <p className="sphere-detail-desc sphere-detail-desc-empty">
+                Начни разговор ниже — Runa опишет смысл этой сферы.
+              </p>
+            )}
 
-        <div className="sphere-detail-actions">
-          <button
-            className="sphere-action-small"
-            onClick={() => { setRenaming(true); setRenameValue(sphere.name); }}
-          >
-            Переименовать
-          </button>
-          <button className="sphere-action-small sphere-action-danger" onClick={handleDelete}>
-            Удалить
-          </button>
-        </div>
+            <div className="sphere-detail-actions">
+              <button
+                className="sphere-action-small"
+                onClick={() => { setRenaming(true); setRenameValue(sphere.name); }}
+              >
+                Переименовать
+              </button>
+              <button className="sphere-action-small sphere-action-danger" onClick={handleDelete}>
+                Удалить
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="sphere-detail-body">
-        {/* Summary block: What's happening now */}
-        {hasRelated && (
-          <div className="sphere-summary-block">
-            {/* What's holding back */}
-            {pressureItems.length > 0 && (
-              <div className="sphere-summary-section sphere-summary-pressure">
-                <h4 className="sphere-summary-label">Что давит</h4>
-                {pressureItems.map((b, i) => (
-                  <div key={i} className="sphere-summary-item">
-                    <span className="sphere-summary-name">{b.name}</span>
-                    {b.description && <span className="sphere-summary-desc">{b.description}</span>}
+        {/* Summary, connections, empty state, documents — hide in enrichment mode */}
+        {!effectiveWsCtx && (
+          <>
+            {/* Summary block: What's happening now */}
+            {hasRelated && (
+              <div className="sphere-summary-block">
+                {pressureItems.length > 0 && (
+                  <div className="sphere-summary-section sphere-summary-pressure">
+                    <h4 className="sphere-summary-label">Что давит</h4>
+                    {pressureItems.map((b, i) => (
+                      <div key={i} className="sphere-summary-item">
+                        <span className="sphere-summary-name">{b.name}</span>
+                        {b.description && <span className="sphere-summary-desc">{b.description}</span>}
+                      </div>
+                    ))}
                   </div>
+                )}
+
+                {growthItems.length > 0 && (
+                  <div className="sphere-summary-section sphere-summary-growth">
+                    <h4 className="sphere-summary-label">На что можно опереться</h4>
+                    {growthItems.map((g, i) => (
+                      <div key={i} className="sphere-summary-item">
+                        <span className="sphere-summary-name">{g.name}</span>
+                        {g.description && <span className="sphere-summary-desc">{g.description}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {patterns.length > 0 && (
+                  <div className="sphere-summary-section sphere-summary-patterns">
+                    <h4 className="sphere-summary-label">Замеченные паттерны</h4>
+                    {patterns.map((p, i) => (
+                      <div key={i} className="sphere-summary-item">
+                        <span className="sphere-summary-name">{p.name}</span>
+                        {p.description && <span className="sphere-summary-desc">{p.description}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Connected spheres */}
+            {sphere.related_spheres.length > 0 && (
+              <div className="sphere-connections">
+                <span className="sphere-connections-label">Связана с:</span>
+                {sphere.related_spheres.map((name) => (
+                  <span key={name} className="sphere-connection-chip">{name}</span>
                 ))}
               </div>
             )}
 
-            {/* Where growth is */}
-            {growthItems.length > 0 && (
-              <div className="sphere-summary-section sphere-summary-growth">
-                <h4 className="sphere-summary-label">На что можно опереться</h4>
-                {growthItems.map((g, i) => (
-                  <div key={i} className="sphere-summary-item">
-                    <span className="sphere-summary-name">{g.name}</span>
-                    {g.description && <span className="sphere-summary-desc">{g.description}</span>}
-                  </div>
-                ))}
+            {/* Empty state — no related entities yet */}
+            {!hasRelated && !intro && (
+              <div className="sphere-empty-state">
+                <p>Эта сфера пока пуста. Расскажи о ней в чате ниже — Runa начнёт строить картину.</p>
               </div>
             )}
 
-            {/* Patterns noticed */}
-            {patterns.length > 0 && (
-              <div className="sphere-summary-section sphere-summary-patterns">
-                <h4 className="sphere-summary-label">Замеченные паттерны</h4>
-                {patterns.map((p, i) => (
-                  <div key={i} className="sphere-summary-item">
-                    <span className="sphere-summary-name">{p.name}</span>
-                    {p.description && <span className="sphere-summary-desc">{p.description}</span>}
-                  </div>
-                ))}
+            {/* Documents */}
+            <div className="sphere-docs">
+              <div className="sphere-docs-header">
+                <h3 className="sphere-docs-title">Документы</h3>
+                <label className={`sphere-docs-upload-btn${uploading ? " disabled" : ""}`}>
+                  {uploading ? "Загрузка..." : "+ Добавить"}
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept=".pdf,.docx,.txt"
+                    onChange={handleUpload}
+                    disabled={uploading}
+                    hidden
+                  />
+                </label>
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Connected spheres */}
-        {sphere.related_spheres.length > 0 && (
-          <div className="sphere-connections">
-            <span className="sphere-connections-label">Связана с:</span>
-            {sphere.related_spheres.map((name) => (
-              <span key={name} className="sphere-connection-chip">{name}</span>
-            ))}
-          </div>
-        )}
-
-        {/* Empty state — no related entities yet */}
-        {!hasRelated && !intro && !effectiveWsCtx && (
-          <div className="sphere-empty-state">
-            <p>Эта сфера пока пуста. Расскажи о ней в чате ниже — Runa начнёт строить картину.</p>
-          </div>
-        )}
-
-        {/* Documents */}
-        <div className="sphere-docs">
-          <div className="sphere-docs-header">
-            <h3 className="sphere-docs-title">Документы</h3>
-            <label className={`sphere-docs-upload-btn${uploading ? " disabled" : ""}`}>
-              {uploading ? "Загрузка..." : "+ Добавить"}
-              <input
-                ref={fileInput}
-                type="file"
-                accept=".pdf,.docx,.txt"
-                onChange={handleUpload}
-                disabled={uploading}
-                hidden
-              />
-            </label>
-          </div>
-          {docs.length === 0 ? (
-            <p className="sphere-docs-hint">
-              Добавь документы (резюме, оффер, контракт, бюджет) — это усилит точность прогноза. Необязательно.
-            </p>
-          ) : (
-            <div className="sphere-docs-list">
-              {docs.map((d) => (
-                <div key={d.id} className="sphere-doc-item">
-                  <span className="sphere-doc-name">{d.filename}</span>
-                  <span className={`sphere-doc-status sphere-doc-status-${d.status}`}>
-                    {d.status === "processed" ? "Обработан" :
-                     d.status === "limited" ? "Частично" :
-                     d.status === "failed" ? "Ошибка" : d.status}
-                  </span>
-                  <button className="sphere-doc-delete" onClick={() => handleDeleteDoc(d.id)} title="Удалить">
-                    &times;
-                  </button>
+              {docs.length === 0 ? (
+                <p className="sphere-docs-hint">
+                  Добавь документы (резюме, оффер, контракт, бюджет) — это усилит точность прогноза. Необязательно.
+                </p>
+              ) : (
+                <div className="sphere-docs-list">
+                  {docs.map((d) => (
+                    <div key={d.id} className="sphere-doc-item">
+                      <span className="sphere-doc-name">{d.filename}</span>
+                      <span className={`sphere-doc-status sphere-doc-status-${d.status}`}>
+                        {d.status === "processed" ? "Обработан" :
+                         d.status === "limited" ? "Частично" :
+                         d.status === "failed" ? "Ошибка" : d.status}
+                      </span>
+                      <button className="sphere-doc-delete" onClick={() => handleDeleteDoc(d.id)} title="Удалить">
+                        &times;
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </div>
+          </>
+        )}
+
+        {/* Structured inputs — domain-specific quick facts */}
+        {sphere && (() => {
+          const schema = matchDomainFields(sphere.name);
+          if (!schema) return null;
+          const filledCount = schema.fields.filter((f) => structuredData[f.key]?.trim()).length;
+          return (
+            <div className="sphere-structured">
+              <div className="sphere-structured-header">
+                <h3 className="sphere-structured-title">{schema.title}</h3>
+                <span className="sphere-structured-count">
+                  {filledCount}/{schema.fields.length} заполнено
+                </span>
+              </div>
+              {effectiveWsCtx && (
+                <p className="sphere-structured-hint">Заполни параметры — это усилит точность прогноза.</p>
+              )}
+              <div className="sphere-structured-fields">
+                {schema.fields.map((f) => (
+                  <div key={f.key} className="sphere-structured-field">
+                    <label className="sphere-structured-label">{f.label}</label>
+                    {f.type === "select" && f.options ? (
+                      <select
+                        className="sphere-structured-select"
+                        value={structuredData[f.key] || ""}
+                        onChange={(e) => updateField(f.key, e.target.value)}
+                      >
+                        <option value="">—</option>
+                        {f.options.map((o) => (
+                          <option key={o} value={o}>{o}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className="sphere-structured-input"
+                        type="text"
+                        placeholder={f.placeholder}
+                        value={structuredData[f.key] || ""}
+                        onChange={(e) => updateField(f.key, e.target.value)}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="sphere-structured-actions">
+                <button
+                  className="sphere-structured-save"
+                  onClick={handleSaveStructured}
+                  disabled={structuredSaving}
+                >
+                  {structuredSaving ? "Сохраняю..." : structuredSaved ? "Сохранено" : "Сохранить"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Sphere Chat */}
         <div className="sphere-chat">
           <h3 className="sphere-chat-title">
-            {messages.length === 0 ? "Начни разговор" : "Разговор"}
+            {effectiveWsCtx
+              ? "Уточнение контекста"
+              : messages.length === 0
+                ? "Собрать факты"
+                : "Контекст сферы"}
           </h3>
 
           {messages.length === 0 && (
             <p className="sphere-chat-hint">
-              Расскажи, что для тебя значит эта сфера. Что в ней происходит сейчас? Что хочешь изменить?
+              {effectiveWsCtx
+                ? "Ответь на вопросы ниже — это усилит точность прогноза."
+                : "Расскажи основные факты: что происходит, какие параметры, ограничения, сроки."}
             </p>
           )}
 

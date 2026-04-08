@@ -499,3 +499,24 @@ def update_sphere_description(user_id: str, sphere_id: str, description: str) ->
     RETURN elementId(s) AS id, s.name AS name, s.description AS description
     """
     return query, {"user_id": user_id, "sphere_id": sphere_id, "description": description}
+
+
+def get_sphere_structured_data(user_id: str, sphere_id: str) -> tuple[str, dict]:
+    """Get structured_data JSON from a sphere."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE elementId(s) = $sphere_id
+    RETURN s.structured_data AS structured_data
+    """
+    return query, {"user_id": user_id, "sphere_id": sphere_id}
+
+
+def update_sphere_structured_data(user_id: str, sphere_id: str, structured_data: str) -> tuple[str, dict]:
+    """Save structured_data JSON string on a sphere node."""
+    query = """
+    MATCH (s:Sphere {user_id: $user_id})
+    WHERE elementId(s) = $sphere_id
+    SET s.structured_data = $structured_data, s.updated_at = datetime()
+    RETURN elementId(s) AS id, s.name AS name
+    """
+    return query, {"user_id": user_id, "sphere_id": sphere_id, "structured_data": structured_data}

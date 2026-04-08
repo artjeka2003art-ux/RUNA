@@ -15,11 +15,14 @@ interface ChatProps {
   onComplete: (data?: RevealData) => void;
 }
 
+const MIN_EXCHANGES_FOR_FINISH = 4;
+
 export default function Chat({ userId, mode, onComplete }: ChatProps) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState("");
+  const [exchangeCount, setExchangeCount] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,6 +32,7 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
         if (res.success) {
           setSessionId(res.data.session_id);
           setMessages([{ role: "assistant", text: res.data.reply }]);
+          setExchangeCount(res.data.exchange_count ?? 1);
         }
         setLoading(false);
       });
@@ -39,31 +43,36 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  async function send() {
+  async function send(forceComplete = false) {
     const text = input.trim();
-    if (!text || loading) return;
+    if (loading) return;
+    if (!forceComplete && !text) return;
 
+    const userText = text || "Давай построим карту из того, что уже есть.";
     setInput("");
-    setMessages((m) => [...m, { role: "user", text }]);
+    setMessages((m) => [...m, { role: "user", text: userText }]);
     setLoading(true);
 
     try {
       if (mode === "onboarding") {
-        const res = await sendOnboardingMessage(userId, sessionId, text);
+        const res = await sendOnboardingMessage(userId, sessionId, userText, forceComplete);
         if (res.success) {
+          setExchangeCount(res.data.exchange_count ?? exchangeCount + 1);
           setMessages((m) => [...m, { role: "assistant", text: res.data.reply }]);
           if (res.data.completed) {
             const reveal: RevealData | undefined = res.data.spheres
               ? {
                   spheres: res.data.spheres,
                   lifeScore: res.data.life_score ?? 0,
+                  activeTensions: res.data.active_tensions ?? [],
+                  decisionBridge: res.data.decision_bridge ?? undefined,
                 }
               : undefined;
             setTimeout(() => onComplete(reveal), 2000);
           }
         }
       } else {
-        const res = await sendCheckinMessage(userId, text);
+        const res = await sendCheckinMessage(userId, userText);
         if (res.success) {
           const summary = buildCheckinSummary(res.data);
           setMessages((m) => [...m, { role: "assistant", text: res.data.reply, summary }]);
@@ -75,13 +84,33 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
     setLoading(false);
   }
 
+  const canFinishEarly = mode === "onboarding" && exchangeCount >= MIN_EXCHANGES_FOR_FINISH && !loading;
+
+  // Progress: rough stage indicator for onboarding
+  const progressLabel = mode === "onboarding"
+    ? exchangeCount < 4
+      ? "Знакомство"
+      : exchangeCount < 8
+        ? "Карта строится..."
+        : "Почти готово"
+    : null;
+
   return (
     <div className="chat">
       <div className="chat-header">
         {mode === "onboarding" ? (
           <>
-            <h2>Знакомство</h2>
-            <p className="chat-subtitle">Расскажи, что происходит в твоей жизни. Система начнёт строить твою модель.</p>
+            <h2>Построим карту твоей жизни</h2>
+            <p className="chat-subtitle">
+              Расскажи коротко о главных сферах — работа, отношения, здоровье, планы.
+              Runa построит модель для прогнозов и сценариев.
+            </p>
+            {progressLabel && (
+              <div className="onboarding-progress">
+                <span className="onboarding-progress-dot" />
+                <span className="onboarding-progress-label">{progressLabel}</span>
+              </div>
+            )}
           </>
         ) : (
           <>
@@ -152,6 +181,15 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
       </div>
 
       <div className="chat-input-bar">
+        {canFinishEarly && (
+          <button
+            className="onboarding-finish-btn"
+            onClick={() => send(true)}
+            title="Построить карту из того, что уже есть"
+          >
+            Построить карту
+          </button>
+        )}
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -159,7 +197,7 @@ export default function Chat({ userId, mode, onComplete }: ChatProps) {
           placeholder={mode === "checkin" ? "Что сегодня происходит?" : "Расскажи..."}
           disabled={loading}
         />
-        <button onClick={send} disabled={loading || !input.trim()}>&#x2191;</button>
+        <button onClick={() => send()} disabled={loading || !input.trim()}>&#x2191;</button>
       </div>
     </div>
   );

@@ -27,6 +27,7 @@ async def send_message(payload: OnboardingMessage, request: Request):
             user_id=payload.user_id,
             session_id=payload.session_id,
             message=payload.message,
+            force_complete=payload.force_complete,
         )
 
         # Commit first score snapshot + return spheres for reveal

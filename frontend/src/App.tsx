@@ -28,9 +28,18 @@ const NAV_ITEMS: { id: Tab; label: string }[] = [
   { id: "path", label: "Decisions" },
 ];
 
+export interface DecisionBridge {
+  source_tension: string;
+  draft_question: string;
+  draft_variants: string[];
+  bridge_reason: string;
+}
+
 export interface RevealData {
   spheres: { id: string; name: string; score?: number }[];
   lifeScore: number;
+  activeTensions?: { name: string; description: string; spheres?: string[] }[];
+  decisionBridge?: DecisionBridge;
 }
 
 /** Context passed from workspace to sphere detail */
@@ -53,6 +62,7 @@ function App() {
   const [sphereOrigin, setSphereOrigin] = useState<SphereOrigin>("lifemap");
   const [workspaceSphereCtx, setWorkspaceSphereCtx] = useState<WorkspaceSphereContext | null>(null);
   const [returnedFromSphere, setReturnedFromSphere] = useState(false);
+  const [decisionBridge, setDecisionBridge] = useState<DecisionBridge | null>(null);
 
   function handleOnboardingComplete(data?: RevealData) {
     localStorage.setItem("runa_onboarded", "true");
@@ -151,7 +161,19 @@ function App() {
   }
 
   if (tab === "reveal" && revealData) {
-    return <Reveal data={revealData} onContinue={handleRevealContinue} />;
+    return (
+      <Reveal
+        data={revealData}
+        onContinue={handleRevealContinue}
+        onGoToDecisions={() => {
+          if (revealData?.decisionBridge) {
+            setDecisionBridge(revealData.decisionBridge);
+          }
+          setRefreshKey((k) => k + 1);
+          setTab("path");
+        }}
+      />
+    );
   }
 
   const showSidebar = tab !== "sphere-detail";
@@ -191,6 +213,8 @@ function App() {
             onCreateSphereAndNavigate={handleCreateSphereAndNavigate}
             returnedFromSphere={returnedFromSphere}
             onClearReturned={() => setReturnedFromSphere(false)}
+            decisionBridge={decisionBridge}
+            onClearBridge={() => setDecisionBridge(null)}
           />
         )}
         {tab === "sphere-detail" && selectedSphereId && (

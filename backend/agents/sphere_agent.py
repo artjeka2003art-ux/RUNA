@@ -35,8 +35,19 @@ class SphereAgent:
         """Deterministic Zep thread ID per user + sphere."""
         return f"sphere-{user_id}-{sphere_id}"
 
-    async def respond(self, user_id: str, sphere_id: str, sphere_name: str, message: str) -> str:
-        """Generate a response grounded in sphere context + global graph + Zep memory."""
+    async def respond(
+        self,
+        user_id: str,
+        sphere_id: str,
+        sphere_name: str,
+        message: str,
+        enrichment_context: dict | None = None,
+    ) -> str:
+        """Generate a response grounded in sphere context + global graph + Zep memory.
+
+        enrichment_context (optional): dict with keys missing_what, missing_why,
+        question — passed when user arrives from Decision Workspace to fill a context gap.
+        """
 
         # 1. Sphere-specific context (graph nodes)
         sphere_context, sphere_desc = await self._build_sphere_context(user_id, sphere_name)
@@ -61,7 +72,29 @@ class SphereAgent:
         history = await self.sessions.get_session(session_key) or []
         history.append({"role": "user", "content": message})
 
-        # 7. Build prompt — add Zep memory section if available
+        # 7. Build enrichment section for prompt
+        enrichment_section = ""
+        if enrichment_context:
+            missing_what = enrichment_context.get("missing_what", "")
+            missing_why = enrichment_context.get("missing_why", "")
+            eq = enrichment_context.get("question", "")
+            enrichment_section = (
+                "## Цель этого разговора\n"
+                f"Пользователь пришёл из Decision Workspace, чтобы закрыть пробел в контексте.\n"
+            )
+            if eq:
+                enrichment_section += f"Вопрос, который он анализирует: «{eq}»\n"
+            if missing_what:
+                enrichment_section += f"Что нужно узнать: {missing_what}\n"
+            if missing_why:
+                enrichment_section += f"Почему это важно: {missing_why}\n"
+            enrichment_section += (
+                "\nТвоя задача: помочь пользователю быстро и конкретно закрыть этот пробел.\n"
+                "Задавай точечные вопросы по этой теме. Не уходи в другие темы.\n"
+                "Когда пробел закрыт — скажи об этом и предложи вернуться в Decision Workspace."
+            )
+
+        # 8. Build prompt — add Zep memory section if available
         memory_section = ""
         if zep_context:
             memory_section = f"\n\n## Долгосрочная память по этой сфере\n{zep_context}"
@@ -73,6 +106,7 @@ class SphereAgent:
             related_spheres=related,
             global_context=global_context,
             recent_checkins=recent_checkins,
+            enrichment_section=enrichment_section,
         ) + memory_section
 
         api_messages = [{"role": "system", "content": system_prompt}] + history
@@ -135,9 +169,9 @@ class SphereAgent:
         prompt = (
             f"Пользователь только что создал новую сферу жизни: \"{sphere_name}\".\n"
             f"Контекст его жизни:\n{global_context}\n\n"
-            f"Напиши тёплое первое сообщение (2-3 предложения) от Runa.\n"
-            f"Цель: помочь человеку раскрыть, что для него значит эта сфера.\n"
-            f"Задай один конкретный вопрос, чтобы начать разговор.\n"
+            f"Напиши короткое первое сообщение (2-3 предложения) от Runa.\n"
+            f"Цель: помочь собрать базовые факты об этой сфере — параметры, ограничения, текущую ситуацию.\n"
+            f"Задай один конкретный фактический вопрос (не про чувства, а про реальные обстоятельства).\n"
             f"Пиши на русском. Не начинай с 'Привет'."
         )
 

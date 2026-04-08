@@ -187,11 +187,15 @@ async def sphere_message(sphere_id: str, payload: SphereMessageRequest, request:
         sphere_name = sphere["name"]
 
         # 2. AI responds
+        enrichment_dict = None
+        if payload.enrichment_context:
+            enrichment_dict = payload.enrichment_context.model_dump()
         reply = await sphere_agent.respond(
             user_id=payload.user_id,
             sphere_id=sphere_id,
             sphere_name=sphere_name,
             message=payload.message,
+            enrichment_context=enrichment_dict,
         )
 
         # 3. Log as checkin
@@ -376,5 +380,36 @@ async def generate_enrichment_prompts(body: EnrichmentPromptsRequest, request: R
             if isinstance(prompts, list) and len(prompts) > 0:
                 return APIResponse(success=True, data={"prompts": prompts[:5]})
         return APIResponse(success=False, error="Failed to parse prompts")
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+# ── Structured Sphere Data ──
+
+class StructuredDataPayload(BaseModel):
+    user_id: str
+    data: dict
+
+
+@router.get("/{sphere_id}/structured-data", response_model=APIResponse)
+async def get_structured_data(sphere_id: str, user_id: str, request: Request):
+    """Get structured inputs for a sphere."""
+    graph_builder = request.app.state.graph_builder
+    try:
+        data = await graph_builder.get_sphere_structured_data(user_id, sphere_id)
+        return APIResponse(success=True, data={"structured_data": data})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.put("/{sphere_id}/structured-data", response_model=APIResponse)
+async def save_structured_data(sphere_id: str, payload: StructuredDataPayload, request: Request):
+    """Save structured inputs for a sphere."""
+    graph_builder = request.app.state.graph_builder
+    try:
+        ok = await graph_builder.save_sphere_structured_data(payload.user_id, sphere_id, payload.data)
+        if not ok:
+            return APIResponse(success=False, error="Sphere not found")
+        return APIResponse(success=True, data={"saved": True})
     except Exception as e:
         return APIResponse(success=False, error=str(e))
