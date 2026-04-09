@@ -215,6 +215,10 @@ class QuestionType(str, Enum):
     pattern_risk = "pattern_risk"
 
 
+# Re-export OSINT models for convenience
+from backend.osint.models import QuestionMode, ExternalSignal, SignalBundle  # noqa: E402, F401
+
+
 class ConfidenceLevel(str, Enum):
     low = "low"
     medium = "medium"
@@ -312,6 +316,7 @@ class WorkspaceResponse(BaseModel):
     """Full Decision Workspace result."""
     question: str = ""
     question_type: QuestionType = QuestionType.trajectory
+    question_mode: str = ""  # QuestionMode value (investment, career, etc.)
     restated_question: str = ""
     variants: list[str] = Field(default_factory=list)
     context_completeness: ContextCompleteness = Field(default_factory=ContextCompleteness)
@@ -319,6 +324,8 @@ class WorkspaceResponse(BaseModel):
     comparison: ScenarioComparison | None = None
     external_insights: str = ""
     sources: list[PredictionSource] = Field(default_factory=list)
+    signal_quality: str = ""  # Quality summary from SignalBundle
+    signal_coverage: str = ""  # Which signal types found/missing
 
 
 class APIResponse(BaseModel):

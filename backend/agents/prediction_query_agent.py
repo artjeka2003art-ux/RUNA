@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 from backend.constants import AI_MODEL
 from backend.graph.neo4j_client import Neo4jClient
 from backend.graph import graph_queries
+from backend.osint.models import QuestionMode, RetrievalPlan, ExternalSignal, SignalBundle
+from backend.osint.classifier import classify_question_mode, classify_question_mode_llm
+from backend.osint.signal_registry import get_retrieval_plan, get_preferred_domains
+from backend.osint.signal_extractor import normalize_to_signal, build_signal_bundle
+from backend.osint.adapters.market_data import get_investment_signals
+from backend.osint.adapters.market_sentiment import get_sentiment_signals
 
 _FETCH_TIMEOUT = 6.0
 _MAX_TEXT_PER_SOURCE = 3000
@@ -1048,6 +1054,7 @@ class PredictionQueryAgent:
     # ── Step 1: Classification ───────────────────────────────────────
 
     async def _classify_question(self, question: str) -> str:
+        """Legacy question type classification (decision/trajectory/etc)."""
         try:
             resp = await self.ai.chat.completions.create(
                 model=AI_MODEL,
@@ -1062,6 +1069,10 @@ class PredictionQueryAgent:
             return "trajectory"
         except Exception:
             return "trajectory"
+
+    async def _classify_question_mode(self, question: str) -> QuestionMode:
+        """Decision-specific mode classification for OSINT routing."""
+        return await classify_question_mode_llm(question, self.ai, AI_MODEL)
 
     # ── Step 2: Personal context retrieval ────────────────────────────
 
@@ -1402,6 +1413,44 @@ class PredictionQueryAgent:
 
 Запрос:"""
 
+    _MODE_SEARCH_QUERY_PROMPT = """Сформируй {n} поисковых запросов на английском для decision intelligence системы.
+
+Вопрос пользователя: {question}
+Decision mode: {mode}
+Типы сигналов, которые нужны: {signal_types}
+
+Требования:
+- На английском
+- Каждый запрос нацелен на конкретный тип сигнала из списка выше
+- Ищи decision-relevant signals, НЕ общие статьи
+- Для mode={mode} фокусируйся на: {mode_focus}
+
+Верни ТОЛЬКО JSON массив строк, без markdown:
+["запрос 1", "запрос 2"]"""
+
+    _MODE_FOCUS: dict[str, str] = {
+        "investment": "текущие рыночные условия, volatility, macro risk, regulation changes",
+        "career": "текущий рынок труда, hiring/layoff тренды, industry conditions",
+        "health_activity": "текущие условия для активности, medical evidence, recovery science",
+        "education": "ROI образования, career outcomes, program reputation",
+        "startup": "market conditions, funding climate, competitor landscape",
+        "relationship": "research-based relationship outcomes, psychological patterns",
+        "relocation": "cost of living comparison, immigration policy, quality of life data",
+        "general_decision": "decision frameworks, research evidence, risk factors",
+    }
+
+    _SIGNAL_WHY_PROMPT = """Для каждого внешнего сигнала кратко объясни, почему он важен для конкретного решения пользователя.
+
+Вопрос пользователя: {question}
+Decision mode: {mode}
+
+Сигналы:
+{signals_text}
+
+Верни JSON массив строк — по одной на каждый сигнал. Каждая строка — 1 предложение, объясняющее почему этот сигнал важен для ЭТОГО решения.
+Формат: ["пояснение к сигналу 1", "пояснение к сигналу 2", ...]
+Только JSON, без markdown:"""
+
     _REJECT_DOMAINS = {
         "pinterest.com", "facebook.com", "instagram.com", "tiktok.com",
         "twitter.com", "x.com", "reddit.com", "quora.com", "youtube.com",
@@ -1553,7 +1602,216 @@ class PredictionQueryAgent:
         except (IndexError, AttributeError):
             return ""
 
-    # ── Search + filter + fetch pipeline ─────────────────────────────
+    # ── OSINT: Decision-specific retrieval pipeline ──────────────────
+
+    async def _build_mode_search_queries(
+        self, question: str, mode: QuestionMode, plan: RetrievalPlan,
+    ) -> list[str]:
+        """Build mode-specific search queries using LLM."""
+        n = min(2, len(plan.signal_types))
+        mode_focus = self._MODE_FOCUS.get(mode.value, "decision-relevant signals")
+        signal_types_str = ", ".join(plan.signal_types[:4])
+
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": (
+                    self._MODE_SEARCH_QUERY_PROMPT
+                    .replace("{n}", str(n))
+                    .replace("{question}", question)
+                    .replace("{mode}", mode.value)
+                    .replace("{signal_types}", signal_types_str)
+                    .replace("{mode_focus}", mode_focus)
+                )}],
+                max_tokens=200,
+                temperature=0.3,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start != -1 and end != -1:
+                queries = json.loads(raw[start:end + 1])
+                if isinstance(queries, list) and queries:
+                    return [str(q) for q in queries[:3]]
+        except Exception:
+            logger.warning("Failed to build mode search queries", exc_info=True)
+
+        # Fallback: use legacy search query builder
+        legacy = await self._build_search_query(question, "decision")
+        return [legacy]
+
+    async def _fill_signal_why(
+        self, signals: list[ExternalSignal], question: str, mode: QuestionMode,
+    ) -> None:
+        """Use LLM to fill why_it_matters for each signal. Mutates signals in place."""
+        if not signals:
+            return
+
+        signals_text = "\n".join(
+            f"{i+1}. [{s.signal_type}] {s.title}: {s.snippet[:150]}"
+            for i, s in enumerate(signals)
+        )
+
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": (
+                    self._SIGNAL_WHY_PROMPT
+                    .replace("{question}", question)
+                    .replace("{mode}", mode.value)
+                    .replace("{signals_text}", signals_text)
+                )}],
+                max_tokens=500,
+                temperature=0.2,
+            )
+            raw = resp.choices[0].message.content.strip()
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start != -1 and end != -1:
+                reasons = json.loads(raw[start:end + 1])
+                for i, sig in enumerate(signals):
+                    if i < len(reasons):
+                        sig.why_it_matters = str(reasons[i])
+        except Exception:
+            logger.warning("Failed to fill signal why_it_matters", exc_info=True)
+
+    async def _search_external_osint(
+        self, question: str, mode: QuestionMode, plan: RetrievalPlan,
+    ) -> SignalBundle:
+        """Full OSINT pipeline: plan → adapters + search → extract → normalize → bundle.
+
+        For investment mode, calls market data adapter in parallel with web search.
+        Structured adapter signals get priority over web-derived signals.
+        """
+        # 1. Kick off structured adapter (if applicable) in parallel with search
+        adapter_task = None
+        if mode == QuestionMode.investment:
+            adapter_task = asyncio.ensure_future(self._fetch_market_adapter_signals(question))
+
+        # 2. Web search pipeline (same as before)
+        search_signals = await self._search_web_signals(question, mode, plan)
+
+        # 3. Collect adapter signals (if any)
+        adapter_signals: list[ExternalSignal] = []
+        if adapter_task is not None:
+            try:
+                adapter_signals = await adapter_task
+            except Exception:
+                logger.warning("Market adapter task failed", exc_info=True)
+
+        # 4. Merge: adapter signals first (higher priority), then search signals
+        all_signals = adapter_signals + search_signals
+
+        # 5. Fill why_it_matters for search signals only (adapter signals already have it)
+        search_only = [s for s in all_signals if s.source_type != "api_data" and not s.why_it_matters]
+        if search_only:
+            await self._fill_signal_why(search_only, question, mode)
+
+        # 6. Build bundle
+        bundle = build_signal_bundle(all_signals, plan)
+        return bundle
+
+    async def _fetch_market_adapter_signals(self, question: str) -> list[ExternalSignal]:
+        """Fetch all structured investment signals (market data + sentiment) in parallel."""
+        tasks = [
+            asyncio.ensure_future(self._safe_adapter(get_investment_signals(question), "market_data")),
+            asyncio.ensure_future(self._safe_adapter(get_sentiment_signals(), "sentiment")),
+        ]
+        results = await asyncio.gather(*tasks)
+        signals: list[ExternalSignal] = []
+        for result in results:
+            signals.extend(result)
+        return signals
+
+    @staticmethod
+    async def _safe_adapter(coro, name: str) -> list[ExternalSignal]:
+        """Run an adapter coroutine with graceful fallback."""
+        try:
+            return await coro
+        except Exception:
+            logger.warning("Adapter %s failed gracefully", name, exc_info=True)
+            return []
+
+    async def _search_web_signals(
+        self, question: str, mode: QuestionMode, plan: RetrievalPlan,
+    ) -> list[ExternalSignal]:
+        """Web-search-based signal retrieval (search → fetch → normalize)."""
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                return []
+
+        # 1. Build mode-specific search queries
+        queries = await self._build_mode_search_queries(question, mode, plan)
+        plan.search_queries = queries
+
+        # 2. Execute searches
+        raw_results = []
+        for q in queries:
+            try:
+                with DDGS() as ddgs:
+                    for r in ddgs.text(q, max_results=8):
+                        raw_results.append(r)
+            except Exception:
+                logger.warning("Search failed for query: %s", q, exc_info=True)
+
+        if not raw_results:
+            return []
+
+        # 3. Deduplicate by URL
+        seen_urls: set[str] = set()
+        unique_results = []
+        for r in raw_results:
+            url = r.get("href", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                unique_results.append(r)
+
+        # 4. Pre-filter: reject junk domains
+        candidates = []
+        for r in unique_results:
+            href = (r.get("href", "") or "").lower()
+            domain = self._domain_from_url(href)
+            if any(junk in domain for junk in self._REJECT_DOMAINS):
+                continue
+            candidates.append(r)
+
+        if not candidates:
+            return []
+
+        # 5. Quick pre-score and take top candidates for full-text fetch
+        from backend.osint.signal_extractor import _score_quality
+        pre_scored = [
+            (_score_quality(r.get("href", ""), r.get("title", ""), r.get("body", ""), mode), r)
+            for r in candidates
+        ]
+        pre_scored.sort(key=lambda x: x[0], reverse=True)
+        top_candidates = [r for _, r in pre_scored if _ >= 0.3][:6]
+
+        if not top_candidates:
+            return []
+
+        # 6. Fetch full text in parallel
+        async def _fetch_one(r: dict) -> tuple[dict, str]:
+            href = r.get("href", "")
+            text = await self._fetch_page_text(href) if href else ""
+            return r, text
+
+        fetched = await asyncio.gather(*[_fetch_one(r) for r in top_candidates])
+
+        # 7. Normalize to ExternalSignal
+        signals: list[ExternalSignal] = []
+        for raw, full_text in fetched:
+            signal = normalize_to_signal(raw, full_text, question, plan)
+            if signal is not None:
+                signals.append(signal)
+
+        return signals
+
+    # ── Search + filter + fetch pipeline (legacy) ────────────────────
 
     async def _build_search_query(self, question: str, question_type: str) -> str:
         try:
@@ -1689,22 +1947,39 @@ class PredictionQueryAgent:
         sphere_id: str | None = None,
         variants: list[str] | None = None,
     ) -> dict:
-        """Decision Workspace pipeline: classify → context → search → multi-scenario synthesis."""
+        """Decision Workspace pipeline: classify → context → OSINT → multi-scenario synthesis."""
 
-        question_type = await self._classify_question(question)
+        # Dual classification: legacy type + new OSINT mode (parallel)
+        question_type_task = asyncio.ensure_future(self._classify_question(question))
+        question_mode_task = asyncio.ensure_future(self._classify_question_mode(question))
+        question_type = await question_type_task
+        question_mode = await question_mode_task
+
+        logger.info("Workspace: question_type=%s, question_mode=%s", question_type, question_mode.value)
 
         # Auto-generate variants early so they inform context selection
         if not variants:
             variants = await self._generate_variants(question, question_type)
         elif len(variants) == 1:
-            # User gave one variant but question implies another — extract from question
             extra = await self._extract_implicit_variant(question, variants[0])
             if extra and extra not in variants:
                 variants.append(extra)
 
-        personal_context, used_sphere_names, used_doc_names, doc_snippets = await self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+        # Build OSINT retrieval plan from signal registry
+        retrieval_plan = get_retrieval_plan(question_mode)
 
-        # Fetch ALL sphere names for routing validation (not just relevant ones)
+        # Gather personal context and OSINT signals in parallel
+        context_task = asyncio.ensure_future(
+            self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+        )
+        osint_task = asyncio.ensure_future(
+            self._search_external_osint(question, question_mode, retrieval_plan)
+        )
+
+        personal_context, used_sphere_names, used_doc_names, doc_snippets = await context_task
+        signal_bundle: SignalBundle = await osint_task
+
+        # Fetch ALL sphere names for routing validation
         all_sphere_names: list[str] = []
         try:
             q, p = graph_queries.get_spheres_with_descriptions(user_id)
@@ -1714,7 +1989,9 @@ class PredictionQueryAgent:
         except Exception:
             all_sphere_names = used_sphere_names[:]
 
-        external_context, sources = await self._search_external(question, question_type)
+        # Use signal-based context for synthesis
+        external_context = signal_bundle.to_synthesis_context()
+        sources = signal_bundle.to_sources_list()
 
         result = await self._synthesize_workspace(
             question, question_type, personal_context, external_context, variants,
@@ -1728,8 +2005,11 @@ class PredictionQueryAgent:
         result["context_spheres_used"] = used_sphere_names
         result["documents_used"] = used_doc_names
         result["question_type"] = question_type
+        result["question_mode"] = question_mode.value
         result["variants"] = variants
         result["sources"] = sources
+        result["signal_quality"] = signal_bundle.quality_summary
+        result["signal_coverage"] = signal_bundle.signal_coverage
         return result
 
     async def _extract_implicit_variant(self, question: str, existing_variant: str) -> str | None:
