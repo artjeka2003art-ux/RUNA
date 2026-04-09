@@ -1760,10 +1760,18 @@ class PredictionQueryAgent:
 
 Для каждого найденного факта укажи:
 - document_name: имя файла
-- evidence_snippet: конкретная цитата или факт (1-2 предложения)
+- evidence_snippet: конкретная цитата или факт (1-2 предложения). ТОЧНО как в документе, не перефразируй числа и условия.
 - evidence_type: один из [financial_fact, constraint, timeline, commitment, condition, risk_factor, personal_parameter, other]
 - relevance: high | medium | low
 - why_it_matters: почему этот факт важен для решения (1 предложение)
+- is_hard_fact: true если это числовое значение, срок, условие контракта, сумма, процент, период, география ограничения. false для мягких/описательных фактов.
+- exact_value: если is_hard_fact=true — точное значение из документа КАК ЕСТЬ (например "EUR 92,000 gross per year", "6 месяцев", "0.5%"). Если is_hard_fact=false — пустая строка "".
+
+КРИТИЧЕСКИ ВАЖНО:
+- exact_value должен содержать ТОЧНОЕ значение из документа, без конверсий, пересчётов и округлений.
+- НЕ конвертируй валюту (EUR→RUB, USD→RUB и т.д.)
+- НЕ пересчитывай annual→monthly или gross→net
+- НЕ меняй единицы измерения
 
 Если документ НЕ содержит ничего полезного для этого вопроса — НЕ выдумывай факты.
 
@@ -2566,15 +2574,34 @@ Decision mode: {mode}
 
         # Inject document evidence into personal context as structured block
         if doc_evidence.get("has_relevant_evidence"):
-            evidence_lines = ["\n## Доказательства из личных документов пользователя"]
-            for it in doc_evidence["items"]:
-                evidence_lines.append(
-                    f"  • [{it.get('evidence_type', 'fact')}] {it.get('document_name', '?')}: "
-                    f"{it.get('evidence_snippet', '')} → {it.get('why_it_matters', '')}"
-                )
+            items = doc_evidence["items"]
+            hard_facts = [it for it in items if it.get("is_hard_fact")]
+            soft_facts = [it for it in items if not it.get("is_hard_fact")]
+
+            # Hard facts block — strict, evidence-bound
+            if hard_facts:
+                hf_lines = [
+                    "\n## ПОДТВЕРЖДЁННЫЕ ФАКТЫ ИЗ ДОКУМЕНТОВ (evidence-bound — используй ТОЛЬКО эти значения, НЕ конвертируй, НЕ додумывай)"
+                ]
+                for it in hard_facts:
+                    val = it.get("exact_value", "") or it.get("evidence_snippet", "")
+                    hf_lines.append(
+                        f"  ✓ [{it.get('evidence_type', 'fact')}] {it.get('document_name', '?')}: {val}"
+                    )
+                personal_context += "\n".join(hf_lines)
+
+            # Soft facts block — standard evidence
+            if soft_facts:
+                sf_lines = ["\n## Дополнительные факты из документов пользователя"]
+                for it in soft_facts:
+                    sf_lines.append(
+                        f"  • [{it.get('evidence_type', 'fact')}] {it.get('document_name', '?')}: "
+                        f"{it.get('evidence_snippet', '')} → {it.get('why_it_matters', '')}"
+                    )
+                personal_context += "\n".join(sf_lines)
+
             if doc_evidence.get("summary"):
-                evidence_lines.append(f"  Итого: {doc_evidence['summary']}")
-            personal_context += "\n".join(evidence_lines)
+                personal_context += f"\n  Итого: {doc_evidence['summary']}"
         elif doc_snippets:
             personal_context += (
                 "\n\nПримечание: загруженные документы пользователя не содержат "

@@ -205,6 +205,8 @@ export interface DocumentEvidenceItem {
   evidence_type: string;
   relevance: "high" | "medium" | "low";
   why_it_matters: string;
+  is_hard_fact?: boolean;
+  exact_value?: string;
 }
 
 export interface DocumentEvidenceReport {

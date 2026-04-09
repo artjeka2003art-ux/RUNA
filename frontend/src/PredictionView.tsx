@@ -811,14 +811,21 @@ export default function PredictionView({
               )}
               <div className="ws-doc-evidence-items">
                 {result.document_evidence.items.map((item, i) => (
-                  <div key={i} className={`ws-doc-evidence-item ws-doc-evidence-${item.relevance}`}>
+                  <div key={i} className={`ws-doc-evidence-item ws-doc-evidence-${item.relevance}${item.is_hard_fact ? " ws-doc-evidence-hard" : ""}`}>
                     <div className="ws-doc-evidence-header">
                       <span className="ws-doc-evidence-file">{item.document_name}</span>
+                      {item.is_hard_fact && (
+                        <span className="ws-doc-evidence-confirmed">&#10003; Подтверждено</span>
+                      )}
                       <span className={`ws-doc-evidence-relevance ws-relevance-${item.relevance}`}>
                         {item.relevance === "high" ? "Ключевой" : item.relevance === "medium" ? "Важный" : "Справочный"}
                       </span>
                     </div>
-                    <p className="ws-doc-evidence-snippet">{item.evidence_snippet}</p>
+                    {item.is_hard_fact && item.exact_value ? (
+                      <p className="ws-doc-evidence-exact">{item.exact_value}</p>
+                    ) : (
+                      <p className="ws-doc-evidence-snippet">{item.evidence_snippet}</p>
+                    )}
                     <p className="ws-doc-evidence-why">{item.why_it_matters}</p>
                   </div>
                 ))}
