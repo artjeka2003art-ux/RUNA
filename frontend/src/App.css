@@ -2170,6 +2170,29 @@
 }
 .sphere-doc-delete:hover { color: #ef4444; }
 
+.sphere-doc-toast {
+  font-size: 0.82rem;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  animation: docToastIn 0.3s ease;
+}
+.sphere-doc-toast-success { background: rgba(34,197,94,0.12); color: #86efac; }
+.sphere-doc-toast-error { background: rgba(239,68,68,0.12); color: #fca5a5; }
+
+@keyframes docToastIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.sphere-doc-just-added {
+  animation: docHighlight 2s ease;
+}
+@keyframes docHighlight {
+  0% { background: rgba(34,197,94,0.25); }
+  100% { background: rgba(255,255,255,0.03); }
+}
+
 /* Context transparency in workspace */
 .ws-context-used { border-left: 3px solid rgba(167,139,250,0.3); }
 
@@ -2257,6 +2280,73 @@
   font-size: 0.78rem;
   color: rgba(161,161,170,0.6);
   margin-top: 8px;
+}
+
+/* Document routing */
+.ws-doc-routing {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ws-doc-routing-label {
+  font-size: 0.75rem;
+  color: rgba(161,161,170,0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.ws-doc-routing-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  padding: 5px 10px;
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.ws-doc-routing-selected {
+  background: rgba(34,197,94,0.06);
+  border: 1px solid rgba(34,197,94,0.15);
+}
+
+.ws-doc-routing-icon {
+  color: #22c55e;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.ws-doc-routing-name {
+  color: #d4d4d8;
+  font-weight: 500;
+}
+
+.ws-doc-routing-type {
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(167,139,250,0.12);
+  color: #a78bfa;
+}
+
+.ws-doc-routing-sphere {
+  font-size: 0.72rem;
+  color: rgba(161,161,170,0.6);
+}
+
+.ws-doc-routing-reason {
+  font-size: 0.72rem;
+  color: rgba(161,161,170,0.5);
+  font-style: italic;
+}
+
+.ws-doc-routing-rejected-summary {
+  font-size: 0.75rem;
+  color: rgba(161,161,170,0.4);
+  padding-left: 10px;
 }
 
 /* Prediction diff block */

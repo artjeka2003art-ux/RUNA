@@ -839,18 +839,36 @@ export default function PredictionView({
             </div>
           )}
 
-          {/* Context transparency */}
-          {(result.context_spheres_used?.length || result.documents_used?.length) ? (
+          {/* Context transparency + document routing */}
+          {(result.context_spheres_used?.length || result.document_candidates?.length) ? (
             <div className="ws-block ws-context-used">
               <h3 className="ws-block-title">Использованный контекст</h3>
               <div className="ws-context-tags">
                 {result.context_spheres_used?.map((s, i) => (
                   <span key={`s-${i}`} className="ws-tag ws-tag-sphere">{s}</span>
                 ))}
-                {result.documents_used?.map((d, i) => (
-                  <span key={`d-${i}`} className="ws-tag ws-tag-doc">{d}</span>
-                ))}
               </div>
+              {result.document_candidates && result.document_candidates.length > 0 && (
+                <div className="ws-doc-routing">
+                  <div className="ws-doc-routing-label">Документы</div>
+                  {result.document_candidates.filter(c => c.selected_for_evidence).map((c, i) => (
+                    <div key={`sel-${i}`} className="ws-doc-routing-item ws-doc-routing-selected">
+                      <span className="ws-doc-routing-icon">&#10003;</span>
+                      <span className="ws-doc-routing-name">{c.document_name}</span>
+                      {c.document_type_hint && c.document_type_hint !== "unknown" && (
+                        <span className="ws-doc-routing-type">{c.document_type_hint}</span>
+                      )}
+                      <span className="ws-doc-routing-sphere">{c.sphere_name}</span>
+                      <span className="ws-doc-routing-reason">{c.candidate_reasons[0]}</span>
+                    </div>
+                  ))}
+                  {result.document_candidates.filter(c => !c.selected_for_evidence).length > 0 && (
+                    <div className="ws-doc-routing-rejected-summary">
+                      {result.document_candidates.filter(c => !c.selected_for_evidence).map(c => c.document_name).join(", ")} — не подошли для этого вопроса
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : null}
 

@@ -215,6 +215,16 @@ export interface DocumentEvidenceReport {
   summary: string;
 }
 
+export interface DocumentCandidate {
+  document_id: string;
+  document_name: string;
+  sphere_name: string;
+  candidate_score: number;
+  candidate_reasons: string[];
+  document_type_hint: string;
+  selected_for_evidence: boolean;
+}
+
 export interface WorkspaceResult {
   question: string;
   question_type: string;
@@ -229,6 +239,7 @@ export interface WorkspaceResult {
   context_spheres_used?: string[];
   documents_used?: string[];
   document_evidence?: DocumentEvidenceReport;
+  document_candidates?: DocumentCandidate[];
   _quality?: PredictionQuality;
   signal_quality?: string;
   signal_coverage?: string;

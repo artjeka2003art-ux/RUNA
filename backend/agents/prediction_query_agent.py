@@ -554,6 +554,311 @@ def build_evidence_pack(
     return evidence
 
 
+# ── Document chunking & relevance scoring ────────────────────────
+
+_CHUNK_SIZE = 500  # chars per chunk
+_CHUNK_OVERLAP = 80  # overlap between adjacent chunks
+_MAX_CHUNKS_PER_DOC = 20  # safety cap
+_TOP_CHUNKS_PER_DOC = 3  # how many best chunks to keep per document
+
+# ── Chunk cache (in-memory LRU) ──────────────────────────────────
+# Avoids re-chunking the same document text on rerun.
+# Key: hash of document text → chunks list.
+# Selection cache: hash of (doc_text + question + variants) → top chunks.
+
+import hashlib
+from collections import OrderedDict
+
+_CHUNK_CACHE_MAX = 64
+_SELECTION_CACHE_MAX = 128
+
+_chunk_cache: OrderedDict[str, list[str]] = OrderedDict()
+_selection_cache: OrderedDict[str, list[dict]] = OrderedDict()
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _selection_key(text_hash: str, question: str, variants: list[str] | None) -> str:
+    sig = text_hash + "|" + question + "|" + ",".join(sorted(variants or []))
+    return hashlib.md5(sig.encode("utf-8", errors="replace")).hexdigest()
+
+
+def chunk_document(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[str]:
+    """Split document text into overlapping chunks. Cached by text hash."""
+    if not text or not text.strip():
+        return []
+
+    th = _text_hash(text)
+    if th in _chunk_cache:
+        _chunk_cache.move_to_end(th)
+        return _chunk_cache[th]
+
+    if len(text) <= chunk_size:
+        chunks = [text.strip()]
+    else:
+        chunks = []
+        start = 0
+        while start < len(text) and len(chunks) < _MAX_CHUNKS_PER_DOC:
+            end = start + chunk_size
+            if end >= len(text):
+                chunk = text[start:].strip()
+                if chunk:
+                    chunks.append(chunk)
+                break
+
+            segment = text[start:end]
+            last_para = segment.rfind("\n\n")
+            if last_para > chunk_size * 0.4:
+                end = start + last_para + 2
+            else:
+                for sep in (". ", ".\n", ";\n", "\n"):
+                    last_sep = segment.rfind(sep)
+                    if last_sep > chunk_size * 0.4:
+                        end = start + last_sep + len(sep)
+                        break
+
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = end - overlap if end - overlap > start else end
+
+    _chunk_cache[th] = chunks
+    if len(_chunk_cache) > _CHUNK_CACHE_MAX:
+        _chunk_cache.popitem(last=False)
+    return chunks
+
+
+def score_chunks(chunks: list[str], question: str, variants: list[str] | None = None) -> list[tuple[float, int, str]]:
+    """Score chunks by relevance to question. Returns [(score, index, chunk)] sorted desc."""
+    q_tokens = _tokenize(question + " " + " ".join(variants or []))
+    if not q_tokens:
+        return [(0.0, i, c) for i, c in enumerate(chunks)]
+
+    q_text = _normalize(question)
+    q_words = q_text.split()
+
+    scored: list[tuple[float, int, str]] = []
+    for i, chunk in enumerate(chunks):
+        chunk_norm = _normalize(chunk)
+        hits = sum(1 for t in q_tokens if t in chunk_norm)
+        token_score = hits / len(q_tokens)
+
+        bigram_bonus = 0.0
+        for j in range(len(q_words) - 1):
+            bigram = q_words[j] + " " + q_words[j + 1]
+            if bigram in chunk_norm:
+                bigram_bonus += 0.15
+
+        score = token_score + min(bigram_bonus, 0.4)
+        scored.append((score, i, chunk))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def select_top_chunks(
+    text: str,
+    question: str,
+    variants: list[str] | None = None,
+    top_k: int = _TOP_CHUNKS_PER_DOC,
+) -> tuple[list[dict], int]:
+    """Chunk document and return top-k relevant chunks.
+
+    Returns (top_chunks, total_chunk_count).
+    top_chunks: [{chunk_index, chunk_text, relevance_score}].
+    Uses selection cache for rerun efficiency.
+    """
+    if not text or not text.strip():
+        return [], 0
+
+    th = _text_hash(text)
+    sk = _selection_key(th, question, variants)
+
+    # Check selection cache
+    if sk in _selection_cache:
+        _selection_cache.move_to_end(sk)
+        cached = _selection_cache[sk]
+        chunks = chunk_document(text)
+        return cached, len(chunks)
+
+    chunks = chunk_document(text)
+    if not chunks:
+        return [], 0
+
+    scored = score_chunks(chunks, question, variants)
+
+    # Fallback: if all scores are 0, take first chunks (positional fallback)
+    if scored and scored[0][0] == 0.0:
+        results = [
+            {"chunk_index": i, "chunk_text": chunks[i], "relevance_score": 0.0}
+            for i in range(min(top_k, len(chunks)))
+        ]
+    else:
+        results = []
+        for score, idx, chunk in scored[:top_k]:
+            results.append({
+                "chunk_index": idx,
+                "chunk_text": chunk,
+                "relevance_score": round(score, 3),
+            })
+
+    _selection_cache[sk] = results
+    if len(_selection_cache) > _SELECTION_CACHE_MAX:
+        _selection_cache.popitem(last=False)
+
+    return results, len(chunks)
+
+
+# ── Document candidate selection / routing ───────────────────────
+
+_MAX_CANDIDATE_DOCS = 3  # max documents to pass to chunk retrieval
+_CANDIDATE_MIN_SCORE = 0.15  # minimum score to be considered
+
+# Mode → filename/content hints that signal relevance
+_MODE_DOC_HINTS: dict[str, list[str]] = {
+    "investment": ["портфел", "инвестиц", "акци", "облигац", "брокер", "депозит", "вклад",
+                   "выписка", "баланс", "отчёт", "отчет", "statement", "portfolio"],
+    "career": ["оффер", "offer", "контракт", "contract", "резюме", "resume", "cv",
+               "трудов", "должност", "зарплат", "оклад", "компенсац", "nda", "non-compete",
+               "employment", "agreement", "hr"],
+    "health_activity": ["анализ", "диагноз", "рецепт", "медицин", "справк", "выписк",
+                        "обследован", "результат", "кров", "мрт", "узи", "health", "medical"],
+    "education": ["диплом", "сертификат", "transcript", "аттестат", "зачётк", "учебн",
+                  "курс", "certificate", "degree"],
+    "relocation": ["виза", "visa", "permit", "паспорт", "passport", "миграц", "вид на жительств",
+                   "аренд", "lease", "rent", "договор найм"],
+    "startup": ["бизнес-план", "pitch", "deck", "финмодел", "p&l", "unit economics",
+                "term sheet", "инвестор", "founder"],
+    "relationship": ["брачн", "развод", "алимент", "custody", "prenup", "соглашен"],
+}
+
+# Filename patterns → document type hint
+_FILENAME_TYPE_HINTS: list[tuple[list[str], str]] = [
+    (["offer", "оффер", "оферт"], "offer"),
+    (["contract", "контракт", "договор", "соглашен", "agreement"], "contract"),
+    (["resume", "резюме", "cv"], "resume"),
+    (["анализ", "результат", "медицин", "health", "medical", "диагноз"], "medical"),
+    (["выписка", "statement", "баланс", "портфел", "portfolio"], "financial_statement"),
+    (["бюджет", "budget", "расход", "доход", "финанс"], "budget"),
+    (["диплом", "сертификат", "certificate", "transcript"], "education_doc"),
+    (["виза", "visa", "паспорт", "passport", "permit"], "immigration_doc"),
+]
+
+
+def _detect_doc_type(filename: str, text_preview: str) -> str:
+    """Detect document type hint from filename and first ~200 chars of text."""
+    combined = _normalize(filename + " " + text_preview[:200])
+    for patterns, doc_type in _FILENAME_TYPE_HINTS:
+        if any(p in combined for p in patterns):
+            return doc_type
+    return "unknown"
+
+
+def score_document_candidate(
+    doc: dict,
+    sphere_name: str,
+    question: str,
+    variants: list[str] | None,
+    question_mode: str = "",
+) -> dict:
+    """Score a single document's relevance to the current question.
+
+    Returns {document_id, document_name, sphere_name, candidate_score,
+             candidate_reasons, document_type_hint, selected_for_evidence}.
+    """
+    filename = doc.get("filename", "")
+    text = doc.get("extracted_text", "")
+    doc_id = doc.get("id", "")
+
+    reasons: list[str] = []
+    score = 0.0
+
+    fn_norm = _normalize(filename)
+    q_norm = _normalize(question + " " + " ".join(variants or []))
+
+    # 1. Filename overlap with question (strong signal)
+    q_tokens = _tokenize(question)
+    fn_tokens = _tokenize(filename)
+    fn_overlap = sum(1 for t in q_tokens if any(t in ft or ft in t for ft in fn_tokens))
+    if fn_overlap > 0:
+        bonus = min(fn_overlap * 0.2, 0.5)
+        score += bonus
+        reasons.append(f"filename match ({fn_overlap} terms)")
+
+    # 2. Mode-specific document hints
+    mode_hints = _MODE_DOC_HINTS.get(question_mode, [])
+    text_preview = _normalize(text[:500]) if text else ""
+    combined = fn_norm + " " + text_preview
+
+    mode_hits = sum(1 for h in mode_hints if h in combined)
+    if mode_hits > 0:
+        bonus = min(mode_hits * 0.15, 0.5)
+        score += bonus
+        reasons.append(f"mode '{question_mode}' hints ({mode_hits})")
+
+    # 3. Sphere-question relevance (if sphere name relates to question)
+    sphere_norm = _normalize(sphere_name)
+    sphere_in_q = any(t in q_norm for t in _tokenize(sphere_name) if len(t) > 2)
+    if sphere_in_q:
+        score += 0.15
+        reasons.append(f"sphere '{sphere_name}' matches question")
+
+    # 4. Content-question overlap (lightweight — first 1000 chars)
+    if text:
+        content_norm = _normalize(text[:1000])
+        content_hits = sum(1 for t in q_tokens if t in content_norm)
+        content_ratio = content_hits / max(len(q_tokens), 1)
+        if content_ratio > 0.1:
+            bonus = min(content_ratio * 0.4, 0.3)
+            score += bonus
+            reasons.append(f"content overlap ({content_ratio:.0%})")
+
+    # 5. Document type detection
+    doc_type = _detect_doc_type(filename, text[:200] if text else "")
+    if doc_type != "unknown":
+        reasons.append(f"type: {doc_type}")
+
+    if not reasons:
+        reasons.append("no strong relevance signals")
+
+    return {
+        "document_id": doc_id,
+        "document_name": filename,
+        "sphere_name": sphere_name,
+        "candidate_score": round(score, 3),
+        "candidate_reasons": reasons,
+        "document_type_hint": doc_type,
+        "selected_for_evidence": False,  # set later after selection
+    }
+
+
+def select_candidate_documents(
+    all_candidates: list[dict],
+    max_docs: int = _MAX_CANDIDATE_DOCS,
+    min_score: float = _CANDIDATE_MIN_SCORE,
+) -> tuple[list[dict], list[dict]]:
+    """Select top candidate documents for evidence pipeline.
+
+    Returns (selected, rejected) — both as lists of candidate dicts.
+    """
+    # Sort by score descending
+    sorted_candidates = sorted(all_candidates, key=lambda c: c["candidate_score"], reverse=True)
+
+    selected: list[dict] = []
+    rejected: list[dict] = []
+
+    for c in sorted_candidates:
+        if len(selected) < max_docs and c["candidate_score"] >= min_score:
+            c["selected_for_evidence"] = True
+            selected.append(c)
+        else:
+            rejected.append(c)
+
+    return selected, rejected
+
+
 def validate_workspace_grounding(
     result: dict,
     evidence: list[EvidenceUnit],
@@ -1043,7 +1348,7 @@ class PredictionQueryAgent:
         """Full prediction pipeline: classify → context → search → synthesize."""
 
         question_type = await self._classify_question(question)
-        personal_context, _, _, _ = await self._gather_context(user_id, sphere_id, question)
+        personal_context, _, _, _, _ = await self._gather_context(user_id, sphere_id, question)
         external_context, sources = await self._search_external(question, question_type)
 
         result = await self._synthesize(
@@ -1082,7 +1387,8 @@ class PredictionQueryAgent:
     async def _gather_context(
         self, user_id: str, sphere_id: str | None, question: str,
         variants: list[str] | None = None,
-    ) -> str:
+        question_mode: str = "",
+    ):
         parts: list[str] = []
 
         # Sphere list with descriptions
@@ -1248,22 +1554,24 @@ class PredictionQueryAgent:
         if zep_context:
             parts.append(zep_context)
 
-        # Document context from uploaded files
-        doc_context, doc_names, doc_snippets = await self._gather_document_context(
+        # Document context from uploaded files (with candidate selection)
+        doc_context, doc_names, doc_snippets, doc_candidates = await self._gather_document_context(
             user_id, context_spheres, question, variants or [],
+            question_mode=question_mode,
         )
         if doc_context:
             parts.append(doc_context)
 
         context = "\n".join(parts) if parts else "Контекст пока минимален."
-        return context, [s["name"] for s in context_spheres], doc_names, doc_snippets
+        return context, [s["name"] for s in context_spheres], doc_names, doc_snippets, doc_candidates
 
     async def _gather_context_with_spheres(
         self, user_id: str, sphere_id: str | None, question: str,
         variants: list[str] | None = None,
-    ) -> tuple[str, list[str], list[str], list[dict]]:
-        """Wrapper that returns (context_text, used_sphere_names, used_doc_names, doc_snippets)."""
-        return await self._gather_context(user_id, sphere_id, question, variants)
+        question_mode: str = "",
+    ) -> tuple[str, list[str], list[str], list[dict], list[dict]]:
+        """Wrapper that returns (context_text, used_sphere_names, used_doc_names, doc_snippets, doc_candidates)."""
+        return await self._gather_context(user_id, sphere_id, question, variants, question_mode=question_mode)
 
     async def _gather_sphere_chat_context(
         self, user_id: str, sphere_ids: list[dict], question: str,
@@ -1351,19 +1659,18 @@ class PredictionQueryAgent:
         context_spheres: list[dict],
         question: str,
         variants: list[str],
-    ) -> tuple[str, list[str], list[dict]]:
-        """Pull extracted text from sphere documents.
+        question_mode: str = "",
+    ) -> tuple[str, list[str], list[dict], list[dict]]:
+        """Pull extracted text from sphere documents using candidate selection + chunk retrieval.
 
-        Returns (context_str, doc_filenames, doc_snippets_for_evidence).
-        doc_snippets: [{filename, sphere_name, snippet}] for grounding checks.
+        Returns (context_str, doc_filenames, doc_snippets_for_evidence, all_candidates).
         """
         if not self.docs or not context_spheres:
-            return "", [], []
+            return "", [], [], []
 
-        q_tokens = _tokenize(question + " " + " ".join(variants))
-        doc_parts: list[str] = []
-        doc_names: list[str] = []
-        doc_snippets: list[dict] = []
+        # Phase 1: Score all available documents as candidates
+        all_candidates: list[dict] = []
+        doc_data_map: dict[str, tuple[dict, str]] = {}  # doc_id → (doc, sphere_name)
 
         for s in context_spheres:
             try:
@@ -1377,29 +1684,70 @@ class PredictionQueryAgent:
                     if len(text) < 20:
                         continue
 
-                    # Question-aware: score relevance of doc text to question
-                    doc_lower = _normalize(text[:2000])
-                    relevance = sum(1 for t in q_tokens if t in doc_lower) / max(len(q_tokens), 1)
-
-                    excerpt = text[:800] if relevance > 0.1 else text[:400]
-                    status_note = " (частично извлечён)" if doc["status"] == "limited" else ""
-                    doc_parts.append(
-                        f"  📄 {doc['filename']}{status_note} [{s['name']}]:\n    {excerpt}"
+                    candidate = score_document_candidate(
+                        doc, s["name"], question, variants, question_mode,
                     )
-                    doc_names.append(doc["filename"])
-                    # Save snippet for evidence grounding (first 300 chars of content)
-                    doc_snippets.append({
-                        "filename": doc["filename"],
-                        "sphere_name": s["name"],
-                        "snippet": text[:300],
-                    })
+                    all_candidates.append(candidate)
+                    doc_data_map[candidate["document_id"]] = (doc, s["name"])
             except Exception:
                 logger.warning("Failed to fetch docs for sphere %s", s["id"], exc_info=True)
                 continue
 
+        if not all_candidates:
+            return "", [], [], []
+
+        # Phase 2: Select top candidates
+        selected, rejected = select_candidate_documents(all_candidates)
+
+        if not selected:
+            logger.info("Document routing: no candidates above threshold (best=%.3f)",
+                        all_candidates[0]["candidate_score"] if all_candidates else 0)
+            return "", [], [], all_candidates
+
+        logger.info("Document routing: %d selected, %d rejected (of %d total)",
+                    len(selected), len(rejected), len(all_candidates))
+
+        # Phase 3: Chunk retrieval only for selected candidates
+        doc_parts: list[str] = []
+        doc_names: list[str] = []
+        doc_snippets: list[dict] = []
+
+        for candidate in selected:
+            doc_id = candidate["document_id"]
+            if doc_id not in doc_data_map:
+                continue
+            doc, sphere_name = doc_data_map[doc_id]
+            text = doc.get("extracted_text", "")
+
+            top_chunks, total_count = select_top_chunks(text, question, variants)
+            if not top_chunks:
+                continue
+
+            best_text = "\n---\n".join(c["chunk_text"] for c in top_chunks)
+            max_relevance = top_chunks[0]["relevance_score"] if top_chunks else 0.0
+
+            status_note = " (частично извлечён)" if doc["status"] == "limited" else ""
+            chunk_note = f" [{len(top_chunks)} фрагм. из {total_count}]"
+            reason_short = candidate["candidate_reasons"][0] if candidate["candidate_reasons"] else ""
+            doc_parts.append(
+                f"  📄 {doc['filename']}{status_note}{chunk_note} [{sphere_name}]:\n    {best_text[:1200]}"
+            )
+            doc_names.append(doc["filename"])
+
+            doc_snippets.append({
+                "filename": doc["filename"],
+                "sphere_name": sphere_name,
+                "snippet": best_text[:600],
+                "chunks": top_chunks,
+                "max_relevance": max_relevance,
+                "total_chunks": total_count,
+                "candidate_score": candidate["candidate_score"],
+                "document_type_hint": candidate["document_type_hint"],
+            })
+
         if not doc_parts:
-            return "", [], []
-        return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names, doc_snippets
+            return "", [], [], all_candidates
+        return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names, doc_snippets, all_candidates
 
     # ── Step 2b: Document evidence extraction ─────────────────────────
 
@@ -1423,6 +1771,43 @@ class PredictionQueryAgent:
 Если вообще ничего полезного: {{"items": [], "documents_not_useful": [...все имена...], "summary": "Загруженные документы не содержат фактов, релевантных этому вопросу."}}
 Верни ТОЛЬКО JSON без markdown."""
 
+    _EVIDENCE_CACHE_TTL = 3600  # 1 hour — documents rarely change, questions rerun often
+    _EVIDENCE_CACHE_PREFIX = "runa:doc_evidence:"
+
+    def _evidence_cache_key(self, question: str, doc_snippets: list[dict]) -> str:
+        """Build Redis cache key from question + document chunk signatures."""
+        parts = [question]
+        for d in doc_snippets:
+            chunks = d.get("chunks", [])
+            chunk_sig = "|".join(c.get("chunk_text", "")[:50] for c in chunks) if chunks else d.get("snippet", "")[:100]
+            parts.append(d.get("filename", "") + ":" + chunk_sig)
+        sig = hashlib.md5("\n".join(parts).encode("utf-8", errors="replace")).hexdigest()
+        return self._EVIDENCE_CACHE_PREFIX + sig
+
+    async def _get_evidence_cache(self, key: str) -> dict | None:
+        """Try to get cached evidence from Redis."""
+        try:
+            redis = getattr(self.docs, "redis", None) or getattr(self.sessions, "redis", None)
+            if not redis:
+                return None
+            raw = await redis.get(key)
+            if raw:
+                logger.info("Document evidence cache HIT: %s", key[-12:])
+                return json.loads(raw)
+        except Exception:
+            pass
+        return None
+
+    async def _set_evidence_cache(self, key: str, value: dict) -> None:
+        """Store evidence result in Redis with TTL."""
+        try:
+            redis = getattr(self.docs, "redis", None) or getattr(self.sessions, "redis", None)
+            if not redis:
+                return
+            await redis.set(key, json.dumps(value, ensure_ascii=False), ex=self._EVIDENCE_CACHE_TTL)
+        except Exception:
+            pass
+
     async def _extract_document_evidence(
         self,
         question: str,
@@ -1431,15 +1816,32 @@ class PredictionQueryAgent:
         """Extract decision-relevant evidence items from user documents via LLM.
 
         Returns dict with items, documents_not_useful, summary.
+        Uses Redis cache to avoid repeated LLM calls for same question+docs.
         Falls back gracefully on any error.
         """
         if not doc_snippets:
             return {"items": [], "documents_not_useful": [], "summary": "", "has_relevant_evidence": False}
 
-        doc_texts = "\n\n".join(
-            f"📄 {d['filename']} [{d['sphere_name']}]:\n{d['snippet']}"
-            for d in doc_snippets
-        )
+        # Check Redis cache
+        cache_key = self._evidence_cache_key(question, doc_snippets)
+        cached = await self._get_evidence_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        # Build doc texts from chunks (richer than old snippet approach)
+        doc_text_parts: list[str] = []
+        for d in doc_snippets:
+            chunks = d.get("chunks", [])
+            if chunks:
+                chunk_texts = "\n---\n".join(c["chunk_text"] for c in chunks)
+                doc_text_parts.append(
+                    f"📄 {d['filename']} [{d['sphere_name']}] "
+                    f"(top {len(chunks)} chunks, max relevance={d.get('max_relevance', '?')}):\n{chunk_texts}"
+                )
+            else:
+                doc_text_parts.append(f"📄 {d['filename']} [{d['sphere_name']}]:\n{d.get('snippet', '')}")
+
+        doc_texts = "\n\n".join(doc_text_parts)
         all_doc_names = list({d["filename"] for d in doc_snippets})
 
         prompt = self._DOC_EVIDENCE_PROMPT.replace("{question}", question).replace("{doc_texts}", doc_texts)
@@ -1452,7 +1854,6 @@ class PredictionQueryAgent:
                 temperature=0,
             )
             raw = resp.choices[0].message.content.strip()
-            # Strip markdown fences if present
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
             data = json.loads(raw)
@@ -1461,7 +1862,6 @@ class PredictionQueryAgent:
             not_useful = data.get("documents_not_useful", [])
             summary = data.get("summary", "")
 
-            # Enrich items with sphere_name from snippets
             name_to_sphere = {d["filename"]: d["sphere_name"] for d in doc_snippets}
             for item in items:
                 if not item.get("sphere_name"):
@@ -1469,13 +1869,17 @@ class PredictionQueryAgent:
 
             documents_used = list({it.get("document_name", "") for it in items if it.get("document_name")})
 
-            return {
+            result = {
                 "items": items,
                 "documents_used": documents_used,
                 "documents_not_useful": not_useful,
                 "has_relevant_evidence": len(items) > 0,
                 "summary": summary,
             }
+
+            # Cache the result
+            await self._set_evidence_cache(cache_key, result)
+            return result
         except Exception as e:
             logger.warning("Document evidence extraction failed: %s", e, exc_info=True)
             return {
@@ -2068,13 +2472,13 @@ Decision mode: {mode}
 
         # Gather personal context and OSINT signals in parallel
         context_task = asyncio.ensure_future(
-            self._gather_context_with_spheres(user_id, sphere_id, question, variants)
+            self._gather_context_with_spheres(user_id, sphere_id, question, variants, question_mode=question_mode.value)
         )
         osint_task = asyncio.ensure_future(
             self._search_external_osint(question, question_mode, retrieval_plan)
         )
 
-        personal_context, used_sphere_names, used_doc_names, doc_snippets = await context_task
+        personal_context, used_sphere_names, used_doc_names, doc_snippets, doc_candidates = await context_task
         signal_bundle: SignalBundle = await osint_task
 
         # Extract document evidence (parallel with sphere name fetch)
@@ -2193,6 +2597,7 @@ Decision mode: {mode}
         result["context_spheres_used"] = used_sphere_names
         result["documents_used"] = used_doc_names
         result["document_evidence"] = doc_evidence
+        result["document_candidates"] = doc_candidates
         result["question_type"] = question_type
         result["question_mode"] = question_mode.value
         result["variants"] = variants

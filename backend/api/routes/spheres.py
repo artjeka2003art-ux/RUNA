@@ -40,64 +40,6 @@ async def list_spheres(user_id: str, request: Request):
         return APIResponse(success=False, error=str(e))
 
 
-@router.get("/{user_id}/{sphere_id}", response_model=APIResponse)
-async def get_sphere_detail(user_id: str, sphere_id: str, request: Request):
-    """Get full sphere detail with related entities."""
-    graph_builder = request.app.state.graph_builder
-    life_score_engine = request.app.state.life_score_engine
-
-    try:
-        row = await graph_builder.get_sphere_detail(user_id, sphere_id)
-        if not row:
-            return APIResponse(success=False, error="Sphere not found")
-
-        # Parse related nodes by type
-        related = row.get("related", [])
-        blockers, goals, patterns, values = [], [], [], []
-
-        for node in related:
-            if node is None:
-                continue
-            labels = set(node.get("labels", []))
-            item = {
-                "type": (labels - {"__all__"}).pop() if labels else "Unknown",
-                "name": node.get("name", ""),
-                "description": node.get("description", ""),
-                "weight": node.get("weight", 0.5),
-            }
-            if "Blocker" in labels:
-                blockers.append(item)
-            elif "Goal" in labels:
-                goals.append(item)
-            elif "Pattern" in labels:
-                patterns.append(item)
-            elif "Value" in labels:
-                values.append(item)
-
-        # Score
-        score_data = await life_score_engine.calculate(user_id)
-        score_map = {s.sphere: s.score for s in score_data.spheres}
-
-        # Related spheres
-        related_spheres = await graph_builder.get_related_spheres(user_id, sphere_id)
-
-        detail = {
-            "id": row["id"],
-            "name": row["name"],
-            "description": row.get("description", ""),
-            "score": score_map.get(row["name"]),
-            "related_blockers": blockers,
-            "related_goals": goals,
-            "related_patterns": patterns,
-            "related_values": values,
-            "related_spheres": related_spheres,
-        }
-
-        return APIResponse(success=True, data={"sphere": detail})
-    except Exception as e:
-        return APIResponse(success=False, error=str(e))
-
-
 @router.post("", response_model=APIResponse)
 async def create_sphere(payload: SphereCreate, request: Request):
     """Create a new sphere and generate AI intro message."""
@@ -411,5 +353,63 @@ async def save_structured_data(sphere_id: str, payload: StructuredDataPayload, r
         if not ok:
             return APIResponse(success=False, error="Sphere not found")
         return APIResponse(success=True, data={"saved": True})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+# NOTE: This route MUST be after all /{sphere_id}/... routes
+# because /{user_id}/{sphere_id} matches any two path segments
+# and would shadow /{sphere_id}/documents, /{sphere_id}/structured-data, etc.
+@router.get("/{user_id}/{sphere_id}", response_model=APIResponse)
+async def get_sphere_detail(user_id: str, sphere_id: str, request: Request):
+    """Get full sphere detail with related entities."""
+    graph_builder = request.app.state.graph_builder
+    life_score_engine = request.app.state.life_score_engine
+
+    try:
+        row = await graph_builder.get_sphere_detail(user_id, sphere_id)
+        if not row:
+            return APIResponse(success=False, error="Sphere not found")
+
+        related = row.get("related", [])
+        blockers, goals, patterns, values = [], [], [], []
+
+        for node in related:
+            if node is None:
+                continue
+            labels = set(node.get("labels", []))
+            item = {
+                "type": (labels - {"__all__"}).pop() if labels else "Unknown",
+                "name": node.get("name", ""),
+                "description": node.get("description", ""),
+                "weight": node.get("weight", 0.5),
+            }
+            if "Blocker" in labels:
+                blockers.append(item)
+            elif "Goal" in labels:
+                goals.append(item)
+            elif "Pattern" in labels:
+                patterns.append(item)
+            elif "Value" in labels:
+                values.append(item)
+
+        score_data = await life_score_engine.calculate(user_id)
+        score_map = {s.sphere: s.score for s in score_data.spheres}
+
+        related_spheres = await graph_builder.get_related_spheres(user_id, sphere_id)
+
+        detail = {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row.get("description", ""),
+            "score": score_map.get(row["name"]),
+            "related_blockers": blockers,
+            "related_goals": goals,
+            "related_patterns": patterns,
+            "related_values": values,
+            "related_spheres": related_spheres,
+        }
+
+        return APIResponse(success=True, data={"sphere": detail})
     except Exception as e:
         return APIResponse(success=False, error=str(e))

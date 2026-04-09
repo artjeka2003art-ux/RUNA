@@ -243,6 +243,8 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
   const [renameValue, setRenameValue] = useState("");
   const [docs, setDocs] = useState<SphereDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadFeedback, setUploadFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [justUploadedId, setJustUploadedId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const [adaptivePrompts, setAdaptivePrompts] = useState<string[] | null>(null);
@@ -389,12 +391,32 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadFeedback(null);
     try {
       const res = await uploadSphereDocument(userId, sphereId, file);
       if (res.success) {
+        const newDocId = res.data?.document?.id || null;
         await loadDocs();
+        setJustUploadedId(newDocId);
+        if (newDocId) setTimeout(() => setJustUploadedId(null), 3000);
+        const status = res.data?.document?.status;
+        setUploadFeedback({
+          type: "success",
+          text: status === "processed"
+            ? `${file.name} загружен и обработан`
+            : status === "limited"
+            ? `${file.name} загружен, но обработан частично`
+            : `${file.name} загружен`,
+        });
+        setTimeout(() => setUploadFeedback(null), 4000);
+      } else {
+        setUploadFeedback({ type: "error", text: res.error || "Не удалось загрузить файл" });
+        setTimeout(() => setUploadFeedback(null), 4000);
       }
-    } catch { /* ignore */ }
+    } catch {
+      setUploadFeedback({ type: "error", text: "Ошибка при загрузке файла" });
+      setTimeout(() => setUploadFeedback(null), 4000);
+    }
     setUploading(false);
     if (fileInput.current) fileInput.current.value = "";
   }
@@ -644,6 +666,11 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
                   />
                 </label>
               </div>
+              {uploadFeedback && (
+                <div className={`sphere-doc-toast sphere-doc-toast-${uploadFeedback.type}`}>
+                  {uploadFeedback.type === "success" ? "\u2713 " : "\u2717 "}{uploadFeedback.text}
+                </div>
+              )}
               {docs.length === 0 ? (
                 <p className="sphere-docs-hint">
                   Добавь документы (резюме, оффер, контракт, бюджет) — это усилит точность прогноза. Необязательно.
@@ -651,7 +678,7 @@ export default function SphereDetail({ userId, sphereId, intro, onBack, workspac
               ) : (
                 <div className="sphere-docs-list">
                   {docs.map((d) => (
-                    <div key={d.id} className="sphere-doc-item">
+                    <div key={d.id} className={`sphere-doc-item${justUploadedId === d.id ? " sphere-doc-just-added" : ""}`}>
                       <span className="sphere-doc-name">{d.filename}</span>
                       <span className={`sphere-doc-status sphere-doc-status-${d.status}`}>
                         {d.status === "processed" ? "Обработан" :

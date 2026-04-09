@@ -351,6 +351,17 @@ class InvestmentProfileUpdate(BaseModel):
 # ── Document Evidence ───────────────────────────────────────────────
 
 
+class DocumentCandidate(BaseModel):
+    """Scored document candidate for evidence pipeline."""
+    document_id: str = ""
+    document_name: str = ""
+    sphere_name: str = ""
+    candidate_score: float = 0.0
+    candidate_reasons: list[str] = Field(default_factory=list)
+    document_type_hint: str = ""  # e.g. "offer", "contract", "medical", "financial"
+    selected_for_evidence: bool = False
+
+
 class DocumentEvidenceItem(BaseModel):
     """A single decision-relevant fact extracted from a user document."""
     document_id: str = ""
