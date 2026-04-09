@@ -141,6 +141,14 @@
 
 {"restated_question": "...", "context_completeness": {"score": "...", "known_factors": ["..."], "missing": [{"what": "...", "why_important": "...", "sphere_hint": "...", "routing_mode": "existing_sphere|multiple_candidates|suggest_new_sphere", "candidate_spheres": [], "suggested_sphere_name": "", "routing_reason": "..."}]}, "reports": [{"variant_label": "...", "most_likely_outcome": "...", "alternative_outcome": "...", "main_risks": ["..."], "leverage_factors": [{"factor": "...", "direction": "...", "weight": "..."}], "primary_bottleneck": "...", "dominant_downside": "...", "non_obvious_insight": "...", "condition_that_changes_prediction": "...", "decision_signal": "...", "confidence": "...", "confidence_reason": "...", "affected_spheres": ["..."], "depends_on": "...", "next_step": "..."}], "comparison": {"summary": "...", "key_tradeoffs": ["..."], "safest_variant": "...", "highest_upside_variant": "...", "most_sensitive_factor": "...", "hidden_trap": "...", "ranking_variable": "..."}, "external_insights": "..."}
 
+## Документы пользователя как доказательства
+
+Если в контексте есть раздел "Доказательства из личных документов пользователя" — это ПЕРВОКЛАССНЫЕ факты.
+- Используй их НАПРЯМУЮ в most_likely_outcome, main_risks, leverage_factors, confidence_reason
+- Ссылайся на конкретный документ: "согласно документу filename.pdf..."
+- Если документ подтверждает или опровергает сценарий — это СИЛЬНЫЙ evidence, упомяни его явно
+- Если документов нет или они нерелевантны — НЕ выдумывай ссылки на документы
+
 ## Ключевой принцип
 
 Если ответ мог бы подойти 100 разным людям — он слишком generic. Переделай.

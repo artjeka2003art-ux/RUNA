@@ -14,6 +14,7 @@ import {
   type InvestmentProfile,
   type TypedMissingField,
   type InvestmentPolicyData,
+  type DocumentEvidenceReport,
 } from "./api";
 import type { DecisionBridge } from "./App";
 
@@ -798,6 +799,43 @@ export default function PredictionView({
             <div className="ws-block">
               <h3 className="ws-block-title">Что говорят источники</h3>
               <p className="ws-text">{result.external_insights}</p>
+            </div>
+          )}
+
+          {/* Document evidence */}
+          {result.document_evidence?.has_relevant_evidence && (
+            <div className="ws-block ws-doc-evidence">
+              <h3 className="ws-block-title">Факты из ваших документов</h3>
+              {result.document_evidence.summary && (
+                <p className="ws-text ws-doc-evidence-summary">{result.document_evidence.summary}</p>
+              )}
+              <div className="ws-doc-evidence-items">
+                {result.document_evidence.items.map((item, i) => (
+                  <div key={i} className={`ws-doc-evidence-item ws-doc-evidence-${item.relevance}`}>
+                    <div className="ws-doc-evidence-header">
+                      <span className="ws-doc-evidence-file">{item.document_name}</span>
+                      <span className={`ws-doc-evidence-relevance ws-relevance-${item.relevance}`}>
+                        {item.relevance === "high" ? "Ключевой" : item.relevance === "medium" ? "Важный" : "Справочный"}
+                      </span>
+                    </div>
+                    <p className="ws-doc-evidence-snippet">{item.evidence_snippet}</p>
+                    <p className="ws-doc-evidence-why">{item.why_it_matters}</p>
+                  </div>
+                ))}
+              </div>
+              {result.document_evidence.documents_not_useful?.length > 0 && (
+                <p className="ws-doc-not-useful">
+                  Не содержат релевантных фактов: {result.document_evidence.documents_not_useful.join(", ")}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* No useful documents notice */}
+          {result.document_evidence && !result.document_evidence.has_relevant_evidence && result.documents_used && result.documents_used.length > 0 && (
+            <div className="ws-block ws-doc-evidence ws-doc-evidence-empty">
+              <h3 className="ws-block-title">Документы</h3>
+              <p className="ws-text">Загруженные документы не содержат фактов, напрямую релевантных этому вопросу.</p>
             </div>
           )}
 

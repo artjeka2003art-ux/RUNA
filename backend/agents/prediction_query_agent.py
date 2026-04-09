@@ -1401,6 +1401,91 @@ class PredictionQueryAgent:
             return "", [], []
         return "\nДокументы пользователя:\n" + "\n".join(doc_parts), doc_names, doc_snippets
 
+    # ── Step 2b: Document evidence extraction ─────────────────────────
+
+    _DOC_EVIDENCE_PROMPT = """Ты — аналитик. Из документов пользователя извлеки ТОЛЬКО факты, которые реально влияют на решение по вопросу.
+
+Вопрос пользователя: {question}
+
+Документы:
+{doc_texts}
+
+Для каждого найденного факта укажи:
+- document_name: имя файла
+- evidence_snippet: конкретная цитата или факт (1-2 предложения)
+- evidence_type: один из [financial_fact, constraint, timeline, commitment, condition, risk_factor, personal_parameter, other]
+- relevance: high | medium | low
+- why_it_matters: почему этот факт важен для решения (1 предложение)
+
+Если документ НЕ содержит ничего полезного для этого вопроса — НЕ выдумывай факты.
+
+Верни JSON: {{"items": [...], "documents_not_useful": ["имена файлов без полезных фактов"], "summary": "1-2 предложения что документы дали для прогноза"}}
+Если вообще ничего полезного: {{"items": [], "documents_not_useful": [...все имена...], "summary": "Загруженные документы не содержат фактов, релевантных этому вопросу."}}
+Верни ТОЛЬКО JSON без markdown."""
+
+    async def _extract_document_evidence(
+        self,
+        question: str,
+        doc_snippets: list[dict],
+    ) -> dict:
+        """Extract decision-relevant evidence items from user documents via LLM.
+
+        Returns dict with items, documents_not_useful, summary.
+        Falls back gracefully on any error.
+        """
+        if not doc_snippets:
+            return {"items": [], "documents_not_useful": [], "summary": "", "has_relevant_evidence": False}
+
+        doc_texts = "\n\n".join(
+            f"📄 {d['filename']} [{d['sphere_name']}]:\n{d['snippet']}"
+            for d in doc_snippets
+        )
+        all_doc_names = list({d["filename"] for d in doc_snippets})
+
+        prompt = self._DOC_EVIDENCE_PROMPT.replace("{question}", question).replace("{doc_texts}", doc_texts)
+
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1200,
+                temperature=0,
+            )
+            raw = resp.choices[0].message.content.strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+            data = json.loads(raw)
+
+            items = data.get("items", [])
+            not_useful = data.get("documents_not_useful", [])
+            summary = data.get("summary", "")
+
+            # Enrich items with sphere_name from snippets
+            name_to_sphere = {d["filename"]: d["sphere_name"] for d in doc_snippets}
+            for item in items:
+                if not item.get("sphere_name"):
+                    item["sphere_name"] = name_to_sphere.get(item.get("document_name", ""), "")
+
+            documents_used = list({it.get("document_name", "") for it in items if it.get("document_name")})
+
+            return {
+                "items": items,
+                "documents_used": documents_used,
+                "documents_not_useful": not_useful,
+                "has_relevant_evidence": len(items) > 0,
+                "summary": summary,
+            }
+        except Exception as e:
+            logger.warning("Document evidence extraction failed: %s", e, exc_info=True)
+            return {
+                "items": [],
+                "documents_used": [],
+                "documents_not_useful": all_doc_names,
+                "has_relevant_evidence": False,
+                "summary": "",
+            }
+
     # ── Step 3: External knowledge retrieval ──────────────────────────
 
     _SEARCH_QUERY_PROMPT = """Сформируй один поисковый запрос на английском для поиска профессиональных статей и исследований.
@@ -1992,6 +2077,11 @@ Decision mode: {mode}
         personal_context, used_sphere_names, used_doc_names, doc_snippets = await context_task
         signal_bundle: SignalBundle = await osint_task
 
+        # Extract document evidence (parallel with sphere name fetch)
+        doc_evidence_task = asyncio.ensure_future(
+            self._extract_document_evidence(question, doc_snippets)
+        )
+
         # Fetch ALL sphere names for routing validation
         all_sphere_names: list[str] = []
         try:
@@ -2001,6 +2091,8 @@ Decision mode: {mode}
                 all_sphere_names = [r["name"] for r in rows]
         except Exception:
             all_sphere_names = used_sphere_names[:]
+
+        doc_evidence = await doc_evidence_task
 
         # Personal investment suitability (investment mode only)
         result_extras: dict = {}
@@ -2068,6 +2160,23 @@ Decision mode: {mode}
                 },
             }
 
+        # Inject document evidence into personal context as structured block
+        if doc_evidence.get("has_relevant_evidence"):
+            evidence_lines = ["\n## Доказательства из личных документов пользователя"]
+            for it in doc_evidence["items"]:
+                evidence_lines.append(
+                    f"  • [{it.get('evidence_type', 'fact')}] {it.get('document_name', '?')}: "
+                    f"{it.get('evidence_snippet', '')} → {it.get('why_it_matters', '')}"
+                )
+            if doc_evidence.get("summary"):
+                evidence_lines.append(f"  Итого: {doc_evidence['summary']}")
+            personal_context += "\n".join(evidence_lines)
+        elif doc_snippets:
+            personal_context += (
+                "\n\nПримечание: загруженные документы пользователя не содержат "
+                "фактов, напрямую релевантных этому вопросу."
+            )
+
         # Use signal-based context for synthesis
         external_context = signal_bundle.to_synthesis_context()
         sources = signal_bundle.to_sources_list()
@@ -2083,6 +2192,7 @@ Decision mode: {mode}
         result["question"] = question
         result["context_spheres_used"] = used_sphere_names
         result["documents_used"] = used_doc_names
+        result["document_evidence"] = doc_evidence
         result["question_type"] = question_type
         result["question_mode"] = question_mode.value
         result["variants"] = variants

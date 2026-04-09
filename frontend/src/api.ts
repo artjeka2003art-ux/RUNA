@@ -198,6 +198,23 @@ export interface PredictionQuality {
   correction?: CorrectionResult | null;
 }
 
+export interface DocumentEvidenceItem {
+  document_name: string;
+  sphere_name?: string;
+  evidence_snippet: string;
+  evidence_type: string;
+  relevance: "high" | "medium" | "low";
+  why_it_matters: string;
+}
+
+export interface DocumentEvidenceReport {
+  items: DocumentEvidenceItem[];
+  documents_used: string[];
+  documents_not_useful: string[];
+  has_relevant_evidence: boolean;
+  summary: string;
+}
+
 export interface WorkspaceResult {
   question: string;
   question_type: string;
@@ -211,6 +228,7 @@ export interface WorkspaceResult {
   sources: { title: string; url: string; domain: string }[];
   context_spheres_used?: string[];
   documents_used?: string[];
+  document_evidence?: DocumentEvidenceReport;
   _quality?: PredictionQuality;
   signal_quality?: string;
   signal_coverage?: string;

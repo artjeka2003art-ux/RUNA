@@ -348,6 +348,32 @@ class InvestmentProfileUpdate(BaseModel):
     profile: InvestmentProfile
 
 
+# ── Document Evidence ───────────────────────────────────────────────
+
+
+class DocumentEvidenceItem(BaseModel):
+    """A single decision-relevant fact extracted from a user document."""
+    document_id: str = ""
+    document_name: str = ""
+    sphere_name: str = ""
+    evidence_snippet: str = ""
+    evidence_type: Literal[
+        "financial_fact", "constraint", "timeline", "commitment",
+        "condition", "risk_factor", "personal_parameter", "other",
+    ] = "other"
+    relevance: Literal["high", "medium", "low"] = "medium"
+    why_it_matters: str = ""
+
+
+class DocumentEvidenceReport(BaseModel):
+    """Aggregated document evidence report for a prediction."""
+    items: list[DocumentEvidenceItem] = Field(default_factory=list)
+    documents_used: list[str] = Field(default_factory=list)
+    documents_not_useful: list[str] = Field(default_factory=list)
+    has_relevant_evidence: bool = False
+    summary: str = ""  # 1-2 sentence summary of what documents confirmed/added
+
+
 class APIResponse(BaseModel):
     success: bool
     data: dict | None = None
