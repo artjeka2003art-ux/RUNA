@@ -13,6 +13,7 @@ import {
   type PredictionQuality,
   type InvestmentProfile,
   type TypedMissingField,
+  type InvestmentPolicyData,
 } from "./api";
 import type { DecisionBridge } from "./App";
 
@@ -760,6 +761,10 @@ export default function PredictionView({
             findSphereId={findSphereId}
           />
 
+          {result.investment_policy && (
+            <InvestmentPolicyBlock policy={result.investment_policy} />
+          )}
+
           {result.question_mode === "investment" && (result.typed_missing_fields?.length || 0) > 0 && (
             <TypedContextCapture
               userId={userId}
@@ -1280,6 +1285,79 @@ function ComparisonBlock({ data, reports, missingCount, rankingVariable }: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── Investment Policy Block ── */
+
+const POSTURE_COLORS: Record<string, string> = {
+  avoid_now: "#ef4444",
+  wait_for_clarity: "#f59e0b",
+  exploratory_entry: "#3b82f6",
+  small_dca: "#22c55e",
+  normal_dca: "#10b981",
+};
+
+const POSTURE_ICONS: Record<string, string> = {
+  avoid_now: "🛑",
+  wait_for_clarity: "⏳",
+  exploratory_entry: "🔍",
+  small_dca: "📈",
+  normal_dca: "✅",
+};
+
+function InvestmentPolicyBlock({ policy }: { policy: InvestmentPolicyData }) {
+  const color = POSTURE_COLORS[policy.action_posture] || "#94a3b8";
+  const icon = POSTURE_ICONS[policy.action_posture] || "📋";
+  const hasGuards = policy.hard_guards.length > 0;
+
+  return (
+    <div className="ws-policy-block" style={{ borderColor: color + "40" }}>
+      <div className="ws-policy-header">
+        <span className="ws-policy-icon">{icon}</span>
+        <div className="ws-policy-action" style={{ color }}>
+          {policy.action_label}
+        </div>
+        <span className="ws-policy-confidence" title="Уверенность в рекомендации">
+          {policy.confidence === "high" ? "●●●" : policy.confidence === "medium" ? "●●○" : "●○○"}
+        </span>
+      </div>
+
+      <div className="ws-policy-exposure">
+        <span className="ws-policy-exposure-label">Допустимый размер:</span>
+        <span className="ws-policy-exposure-value">{policy.exposure_label}</span>
+      </div>
+
+      <div className="ws-policy-why">{policy.why}</div>
+
+      {hasGuards && (
+        <div className="ws-policy-guards">
+          {policy.hard_guards.map((g, i) => {
+            const text = g.includes(": ") ? g.split(": ", 2)[1] : g;
+            return (
+              <div key={i} className="ws-policy-guard">🛑 {text}</div>
+            );
+          })}
+        </div>
+      )}
+
+      {!hasGuards && policy.soft_limiters.length > 0 && (
+        <div className="ws-policy-limiters">
+          {policy.soft_limiters.slice(0, 3).map((l, i) => (
+            <div key={i} className="ws-policy-limiter">⚠ {l}</div>
+          ))}
+        </div>
+      )}
+
+      {policy.what_must_improve.length > 0 && (
+        <div className="ws-policy-improve">
+          <span className="ws-policy-improve-title">Что должно измениться:</span>
+          {policy.what_must_improve.slice(0, 3).map((w, i) => (
+            <div key={i} className="ws-policy-improve-item">→ {w}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

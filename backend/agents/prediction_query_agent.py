@@ -25,7 +25,7 @@ from backend.osint.adapters.market_data import get_investment_signals
 from backend.osint.adapters.market_sentiment import get_sentiment_signals
 from backend.osint.fusion.investment import fuse_investment_signals, InvestmentFusion
 from backend.osint.fusion.personal_investment import extract_constraints, build_constraints, assess_suitability
-from backend.osint.fusion.investment_policy import compute_investment_policy
+from backend.osint.fusion.investment_policy import compute_investment_policy, ACTION_LABELS, EXPOSURE_LABELS
 
 _FETCH_TIMEOUT = 6.0
 _MAX_TEXT_PER_SOURCE = 3000
@@ -2055,6 +2055,17 @@ Decision mode: {mode}
             result_extras = {
                 "typed_missing_fields": typed_missing,
                 "existing_investment_profile": inv_profile or {},
+                "investment_policy": {
+                    "action_posture": policy.action_posture,
+                    "action_label": ACTION_LABELS.get(policy.action_posture, policy.action_posture),
+                    "exposure_posture": policy.exposure_posture,
+                    "exposure_label": EXPOSURE_LABELS.get(policy.exposure_posture, policy.exposure_posture),
+                    "hard_guards": policy.hard_guards,
+                    "soft_limiters": policy.soft_limiters,
+                    "why": policy.why_this_posture,
+                    "what_must_improve": policy.what_must_improve,
+                    "confidence": policy.policy_confidence,
+                },
             }
 
         # Use signal-based context for synthesis

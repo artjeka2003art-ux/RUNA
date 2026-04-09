@@ -216,6 +216,19 @@ export interface WorkspaceResult {
   signal_coverage?: string;
   typed_missing_fields?: TypedMissingField[];
   existing_investment_profile?: Record<string, unknown>;
+  investment_policy?: InvestmentPolicyData;
+}
+
+export interface InvestmentPolicyData {
+  action_posture: string;
+  action_label: string;
+  exposure_posture: string;
+  exposure_label: string;
+  hard_guards: string[];
+  soft_limiters: string[];
+  why: string;
+  what_must_improve: string[];
+  confidence: string;
 }
 
 export interface TypedMissingField {
