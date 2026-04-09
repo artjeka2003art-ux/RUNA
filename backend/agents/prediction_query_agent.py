@@ -23,6 +23,9 @@ from backend.osint.signal_registry import get_retrieval_plan, get_preferred_doma
 from backend.osint.signal_extractor import normalize_to_signal, build_signal_bundle
 from backend.osint.adapters.market_data import get_investment_signals
 from backend.osint.adapters.market_sentiment import get_sentiment_signals
+from backend.osint.fusion.investment import fuse_investment_signals, InvestmentFusion
+from backend.osint.fusion.personal_investment import extract_constraints, build_constraints, assess_suitability
+from backend.osint.fusion.investment_policy import compute_investment_policy
 
 _FETCH_TIMEOUT = 6.0
 _MAX_TEXT_PER_SOURCE = 3000
@@ -1709,6 +1712,16 @@ Decision mode: {mode}
 
         # 6. Build bundle
         bundle = build_signal_bundle(all_signals, plan)
+
+        # 7. Investment fusion: cross-interpret structured signals
+        if mode == QuestionMode.investment:
+            fusion = fuse_investment_signals(all_signals)
+            if fusion:
+                bundle.fusion_context = fusion.to_synthesis_block()
+                bundle._investment_fusion = fusion  # stored for personal suitability step
+                logger.info("Investment fusion: regime=%s, alignment=%s",
+                            fusion.market_regime, fusion.signal_alignment)
+
         return bundle
 
     async def _fetch_market_adapter_signals(self, question: str) -> list[ExternalSignal]:
@@ -1989,6 +2002,61 @@ Decision mode: {mode}
         except Exception:
             all_sphere_names = used_sphere_names[:]
 
+        # Personal investment suitability (investment mode only)
+        result_extras: dict = {}
+        if question_mode == QuestionMode.investment:
+            # Fetch structured investment profile
+            inv_profile: dict | None = None
+            try:
+                from backend.graph import graph_builder as _gb_mod
+                gb = self.graph  # Neo4jClient
+                q, p = graph_queries.get_investment_profile(user_id)
+                rows = await gb.execute_query(q, p)
+                if rows and rows[0].get("investment_profile"):
+                    import json as _json
+                    inv_profile = _json.loads(rows[0]["investment_profile"])
+            except Exception:
+                logger.warning("Failed to fetch investment profile", exc_info=True)
+
+            constraints, constraint_sources = build_constraints(inv_profile, personal_context)
+            inv_fusion = getattr(signal_bundle, '_investment_fusion', None)
+            suitability = assess_suitability(constraints, inv_fusion)
+
+            # Compute investment policy
+            policy = compute_investment_policy(constraints, inv_fusion, suitability)
+
+            # Append personal context + suitability + policy to bundle for synthesis
+            source_note = f"Источники данных: {', '.join(constraint_sources)}"
+            personal_inv_block = (
+                "## Личный инвестиционный профиль пользователя\n"
+                + constraints.to_summary()
+                + f"\nПолнота личного контекста: {constraints.completeness}"
+                + f"\n{source_note}"
+            )
+            suitability_block = suitability.to_synthesis_block()
+            policy_block = policy.to_synthesis_block()
+            signal_bundle.fusion_context = (
+                (signal_bundle.fusion_context or "")
+                + "\n\n" + personal_inv_block
+                + "\n\n" + suitability_block
+                + "\n\n" + policy_block
+            )
+            logger.info("Personal suitability: action=%s, level=%s, missing=%d",
+                        suitability.recommended_action, suitability.suitability_level,
+                        len(suitability.missing_for_confidence))
+
+            # Build typed missing context contract for frontend
+            from backend.osint.fusion.personal_investment import TYPED_FIELD_REGISTRY
+            missing_keys = constraints.missing_field_keys
+            typed_missing = [
+                TYPED_FIELD_REGISTRY[k] for k in missing_keys
+                if k in TYPED_FIELD_REGISTRY
+            ]
+            result_extras = {
+                "typed_missing_fields": typed_missing,
+                "existing_investment_profile": inv_profile or {},
+            }
+
         # Use signal-based context for synthesis
         external_context = signal_bundle.to_synthesis_context()
         sources = signal_bundle.to_sources_list()
@@ -2010,6 +2078,7 @@ Decision mode: {mode}
         result["sources"] = sources
         result["signal_quality"] = signal_bundle.quality_summary
         result["signal_coverage"] = signal_bundle.signal_coverage
+        result.update(result_extras)
         return result
 
     async def _extract_implicit_variant(self, question: str, existing_variant: str) -> str | None:

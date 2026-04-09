@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from backend.models.schemas import APIResponse, OneMoveFeedback
+from backend.models.schemas import APIResponse, OneMoveFeedback, InvestmentProfile, InvestmentProfileUpdate
 from backend.graph import graph_queries
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -149,6 +149,29 @@ async def submit_one_move_feedback(user_id: str, body: OneMoveFeedback, request:
             "message": message,
             "score_impact": round(score_impact, 1),
         })
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.get("/{user_id}/investment-profile", response_model=APIResponse)
+async def get_investment_profile(user_id: str, request: Request):
+    graph_builder = request.app.state.graph_builder
+    try:
+        data = await graph_builder.get_investment_profile(user_id)
+        return APIResponse(success=True, data={"profile": data})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.put("/{user_id}/investment-profile", response_model=APIResponse)
+async def save_investment_profile(user_id: str, body: InvestmentProfileUpdate, request: Request):
+    graph_builder = request.app.state.graph_builder
+    try:
+        profile_dict = body.profile.model_dump(exclude_none=True, exclude_defaults=False)
+        # Remove empty strings to keep storage clean
+        profile_dict = {k: v for k, v in profile_dict.items() if v != "" and v is not None}
+        ok = await graph_builder.save_investment_profile(user_id, profile_dict)
+        return APIResponse(success=True, data={"saved": ok, "profile": profile_dict})
     except Exception as e:
         return APIResponse(success=False, error=str(e))
 

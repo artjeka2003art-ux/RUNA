@@ -86,6 +86,7 @@ class SignalBundle(BaseModel):
     signals: list[ExternalSignal] = Field(default_factory=list)
     quality_summary: str = ""
     signal_coverage: str = ""  # which signal_types were found vs missing
+    fusion_context: str = ""   # derived insights from cross-referencing signals
 
     def to_synthesis_context(self) -> str:
         """Format signal bundle for LLM synthesis prompt."""
@@ -118,6 +119,11 @@ class SignalBundle(BaseModel):
                 f"   **Почему важно для решения:** {sig.why_it_matters}\n"
                 f"   Источник: {sig.source_name}"
             )
+
+        # Fusion context (derived insights from cross-referencing signals)
+        if self.fusion_context:
+            lines.append("")
+            lines.append(self.fusion_context)
 
         # Personal factors to check reminder
         pf = self.retrieval_plan.personal_factors_to_check

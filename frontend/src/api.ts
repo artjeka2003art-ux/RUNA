@@ -201,6 +201,7 @@ export interface PredictionQuality {
 export interface WorkspaceResult {
   question: string;
   question_type: string;
+  question_mode?: string;
   restated_question: string;
   variants: string[];
   context_completeness: ContextCompleteness;
@@ -211,6 +212,22 @@ export interface WorkspaceResult {
   context_spheres_used?: string[];
   documents_used?: string[];
   _quality?: PredictionQuality;
+  signal_quality?: string;
+  signal_coverage?: string;
+  typed_missing_fields?: TypedMissingField[];
+  existing_investment_profile?: Record<string, unknown>;
+}
+
+export interface TypedMissingField {
+  field_key: string;
+  label: string;
+  why: string;
+  capture_type: "select" | "number" | "boolean";
+  mode: string;
+  options?: { value: string; label: string }[];
+  min?: number;
+  max?: number;
+  placeholder?: string;
 }
 
 export async function sendWorkspaceQuery(
@@ -365,6 +382,33 @@ export async function saveSphereStructuredData(userId: string, sphereId: string,
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, data }),
+  });
+  return res.json();
+}
+
+// ── Investment Profile ──
+
+export interface InvestmentProfile {
+  investment_horizon?: "short" | "medium" | "long" | "";
+  risk_tolerance?: "low" | "medium" | "high" | "";
+  experience_level?: "novice" | "some" | "experienced" | "";
+  max_acceptable_drawdown?: string;
+  runway_months?: number | null;
+  has_debt?: boolean | null;
+  has_dependents?: boolean | null;
+  monthly_investable_amount?: string;
+}
+
+export async function getInvestmentProfile(userId: string) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/investment-profile`);
+  return res.json();
+}
+
+export async function saveInvestmentProfile(userId: string, profile: InvestmentProfile) {
+  const res = await fetch(`${BASE}/dashboard/${userId}/investment-profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, profile }),
   });
   return res.json();
 }

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import {
   sendWorkspaceQuery,
   getSpheres,
+  getInvestmentProfile,
+  saveInvestmentProfile,
   type WorkspaceResult,
   type ScenarioReport,
   type ContextCompleteness,
@@ -9,8 +11,91 @@ import {
   type LeverageFactor,
   type MissingContextItem,
   type PredictionQuality,
+  type InvestmentProfile,
+  type TypedMissingField,
 } from "./api";
 import type { DecisionBridge } from "./App";
+
+// ── Typed missing context field configs ──
+// Mode-specific field definitions for structured capture.
+// Investment is the first mode pack; pattern is reusable.
+
+interface TypedFieldConfig {
+  key: string;
+  label: string;
+  why: string;
+  type: "select" | "number" | "boolean";
+  options?: { value: string; label: string }[];
+  placeholder?: string;
+}
+
+const INVESTMENT_FIELDS: TypedFieldConfig[] = [
+  {
+    key: "investment_horizon",
+    label: "Горизонт инвестирования",
+    why: "Влияет на то, считать ли просадку критичной",
+    type: "select",
+    options: [
+      { value: "short", label: "Краткосрочный (< 1 года)" },
+      { value: "medium", label: "Среднесрочный (1–3 года)" },
+      { value: "long", label: "Долгосрочный (3+ лет)" },
+    ],
+  },
+  {
+    key: "risk_tolerance",
+    label: "Толерантность к риску",
+    why: "Влияет на допустимый тип входа и размер позиции",
+    type: "select",
+    options: [
+      { value: "low", label: "Низкая — не готов терять" },
+      { value: "medium", label: "Умеренная" },
+      { value: "high", label: "Высокая — готов к просадкам" },
+    ],
+  },
+  {
+    key: "experience_level",
+    label: "Опыт инвестирования",
+    why: "Новичкам нужны более осторожные рекомендации",
+    type: "select",
+    options: [
+      { value: "novice", label: "Новичок" },
+      { value: "some", label: "Базовый опыт" },
+      { value: "experienced", label: "Опытный инвестор" },
+    ],
+  },
+  {
+    key: "runway_months",
+    label: "Финансовая подушка (месяцев)",
+    why: "Без подушки инвестировать в волатильные активы опасно",
+    type: "number",
+    placeholder: "Например: 6",
+  },
+  {
+    key: "max_acceptable_drawdown",
+    label: "Допустимая просадка",
+    why: "Определяет acceptable volatility",
+    type: "select",
+    options: [
+      { value: "10%", label: "До 10%" },
+      { value: "30%", label: "До 30%" },
+      { value: "50%+", label: "50% и больше" },
+    ],
+  },
+  {
+    key: "has_debt",
+    label: "Есть долги / кредиты",
+    why: "Инвестирование при долгах увеличивает суммарный риск",
+    type: "boolean",
+  },
+  {
+    key: "has_dependents",
+    label: "Есть зависимые (семья, дети)",
+    why: "Потеря капитала затрагивает не только вас",
+    type: "boolean",
+  },
+];
+
+// MISSING_TO_KEY removed — now using structured contract from backend
 
 // ── Workspace state persistence ──
 
@@ -675,6 +760,15 @@ export default function PredictionView({
             findSphereId={findSphereId}
           />
 
+          {result.question_mode === "investment" && (result.typed_missing_fields?.length || 0) > 0 && (
+            <TypedContextCapture
+              userId={userId}
+              backendFields={result.typed_missing_fields!}
+              existingProfile={result.existing_investment_profile || {}}
+              onSaved={handleAnalyze}
+            />
+          )}
+
           {result.reports.length > 0 && (
             <div className="ws-block">
               <h3 className="ws-block-title">Сценарии</h3>
@@ -1186,6 +1280,168 @@ function ComparisonBlock({ data, reports, missingCount, rankingVariable }: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── Typed Missing Context Capture (backend-driven) ── */
+
+function TypedContextCapture({
+  userId,
+  backendFields,
+  existingProfile,
+  onSaved,
+}: {
+  userId: string;
+  backendFields: TypedMissingField[];
+  existingProfile: Record<string, unknown>;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [values, setValues] = useState<Record<string, string | number | boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  // Prefill existing values when opening
+  useEffect(() => {
+    if (!open) return;
+    const prefilled: Record<string, string | number | boolean> = {};
+    for (const f of backendFields) {
+      const existing = existingProfile[f.field_key];
+      if (existing !== undefined && existing !== null && existing !== "") {
+        prefilled[f.field_key] = existing as string | number | boolean;
+      }
+    }
+    setValues(prev => ({ ...prefilled, ...prev }));
+  }, [open]);
+
+  const handleChange = (key: string, value: string | number | boolean, field: TypedMissingField) => {
+    // Basic validation
+    const newErrors = { ...errors };
+    if (field.capture_type === "number") {
+      const num = typeof value === "number" ? value : Number(value);
+      if (isNaN(num)) {
+        newErrors[key] = "Введите число";
+      } else if (field.min !== undefined && num < field.min) {
+        newErrors[key] = `Минимум: ${field.min}`;
+      } else if (field.max !== undefined && num > field.max) {
+        newErrors[key] = `Максимум: ${field.max}`;
+      } else {
+        delete newErrors[key];
+      }
+    } else {
+      delete newErrors[key];
+    }
+    setErrors(newErrors);
+    setValues(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleSave = async () => {
+    if (saving || Object.keys(errors).length > 0) return;
+    setSaving(true);
+    try {
+      const profile: Record<string, unknown> = { ...existingProfile };
+      for (const [k, v] of Object.entries(values)) {
+        if (v !== "" && v !== undefined) {
+          profile[k] = v;
+        }
+      }
+      await saveInvestmentProfile(userId, profile as InvestmentProfile);
+      setOpen(false);
+      setValues({});
+      setErrors({});
+      onSaved();
+    } catch { /* silent */ }
+    setSaving(false);
+  };
+
+  const filledCount = Object.entries(values).filter(
+    ([k, v]) => v !== "" && v !== undefined && v !== existingProfile[k]
+  ).length;
+  const hasErrors = Object.keys(errors).length > 0;
+  const n = backendFields.length;
+
+  return (
+    <div className="ws-typed-capture">
+      {!open ? (
+        <div className="ws-typed-capture-prompt" onClick={() => setOpen(true)}>
+          <div className="ws-typed-capture-icon">⚡</div>
+          <div className="ws-typed-capture-text">
+            <strong>Повысить точность прогноза</strong>
+            <span>
+              Уточни {n} параметр{n === 1 ? "" : n < 5 ? "а" : "ов"} — прогноз пересчитается автоматически
+            </span>
+          </div>
+          <div className="ws-typed-capture-arrow">→</div>
+        </div>
+      ) : (
+        <div className="ws-typed-capture-panel">
+          <div className="ws-typed-capture-header">
+            <strong>Уточни параметры для точного прогноза</strong>
+            <button className="ws-typed-capture-close" onClick={() => setOpen(false)}>✕</button>
+          </div>
+          <div className="ws-typed-capture-fields">
+            {backendFields.map(f => (
+              <div key={f.field_key} className="ws-typed-field">
+                <label className="ws-typed-field-label">{f.label}</label>
+                <span className="ws-typed-field-why">{f.why}</span>
+                {f.capture_type === "select" && f.options && (
+                  <div className="ws-typed-chips">
+                    {f.options.map(opt => (
+                      <button
+                        key={opt.value}
+                        className={`ws-typed-chip ${values[f.field_key] === opt.value ? "ws-typed-chip-active" : ""}`}
+                        onClick={() => handleChange(f.field_key, opt.value, f)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {f.capture_type === "number" && (
+                  <>
+                    <input
+                      type="number"
+                      className={`ws-typed-input ${errors[f.field_key] ? "ws-typed-input-error" : ""}`}
+                      placeholder={f.placeholder}
+                      min={f.min}
+                      max={f.max}
+                      value={values[f.field_key] as number ?? ""}
+                      onChange={e => handleChange(
+                        f.field_key,
+                        e.target.value ? Number(e.target.value) : "",
+                        f
+                      )}
+                    />
+                    {errors[f.field_key] && (
+                      <span className="ws-typed-error">{errors[f.field_key]}</span>
+                    )}
+                  </>
+                )}
+                {f.capture_type === "boolean" && (
+                  <div className="ws-typed-chips">
+                    <button
+                      className={`ws-typed-chip ${values[f.field_key] === true ? "ws-typed-chip-active" : ""}`}
+                      onClick={() => handleChange(f.field_key, true, f)}
+                    >Да</button>
+                    <button
+                      className={`ws-typed-chip ${values[f.field_key] === false ? "ws-typed-chip-active" : ""}`}
+                      onClick={() => handleChange(f.field_key, false, f)}
+                    >Нет</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <button
+            className="ws-typed-save"
+            onClick={handleSave}
+            disabled={saving || filledCount === 0 || hasErrors}
+          >
+            {saving ? "Сохраняю..." : `Сохранить и пересчитать${filledCount > 0 ? ` (${filledCount})` : ""}`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

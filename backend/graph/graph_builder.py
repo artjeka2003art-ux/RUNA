@@ -155,6 +155,22 @@ class GraphBuilder:
         rows = await self._run(*graph_queries.update_sphere_description(user_id, sphere_id, description))
         return rows[0] if rows else None
 
+    async def get_investment_profile(self, user_id: str) -> dict:
+        rows = await self._run(*graph_queries.get_investment_profile(user_id))
+        if rows and rows[0].get("investment_profile"):
+            import json
+            try:
+                return json.loads(rows[0]["investment_profile"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {}
+
+    async def save_investment_profile(self, user_id: str, data: dict) -> bool:
+        import json
+        raw = json.dumps(data, ensure_ascii=False)
+        rows = await self._run(*graph_queries.save_investment_profile(user_id, raw))
+        return len(rows) > 0
+
     async def get_sphere_structured_data(self, user_id: str, sphere_id: str) -> dict:
         rows = await self._run(*graph_queries.get_sphere_structured_data(user_id, sphere_id))
         if rows and rows[0].get("structured_data"):

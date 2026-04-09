@@ -10,6 +10,7 @@ Returns current + previous day's Fear & Greed value (0-100) and classification.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 _FNG_URL = "https://api.alternative.me/fng/?limit=2"
 _TIMEOUT = 6.0
+_CACHE_TTL = 3600  # 1 hour — FnG updates once per day
+
+# Simple in-memory TTL cache
+_fng_cache: tuple[float, dict | None] | None = None
 
 
 # ── Classification labels ────────────────────────────────────────────
@@ -74,23 +79,32 @@ def _risk_interpretation(value: int) -> str:
 # ── Fetch + convert ──────────────────────────────────────────────────
 
 async def fetch_fear_greed() -> dict | None:
-    """Fetch Fear & Greed Index. Returns None on any failure."""
+    """Fetch Fear & Greed Index. Uses 1h TTL cache since FnG updates daily."""
+    global _fng_cache
+    now = time.monotonic()
+
+    if _fng_cache and now - _fng_cache[0] < _CACHE_TTL:
+        logger.debug("FnG cache hit")
+        return _fng_cache[1]
+
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(_FNG_URL, headers={"Accept": "application/json"})
             if resp.status_code != 200:
                 logger.warning("Fear & Greed API returned %d", resp.status_code)
-                return None
+                return _fng_cache[1] if _fng_cache else None
             data = resp.json()
             entries = data.get("data", [])
             if not entries:
-                return None
+                return _fng_cache[1] if _fng_cache else None
             current = entries[0]
             previous = entries[1] if len(entries) > 1 else None
-            return {"current": current, "previous": previous}
+            result = {"current": current, "previous": previous}
+            _fng_cache = (now, result)
+            return result
     except Exception:
         logger.warning("Fear & Greed fetch failed", exc_info=True)
-        return None
+        return _fng_cache[1] if _fng_cache else None
 
 
 def fng_to_signal(data: dict) -> ExternalSignal:

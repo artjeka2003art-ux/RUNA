@@ -328,6 +328,26 @@ class WorkspaceResponse(BaseModel):
     signal_coverage: str = ""  # Which signal types found/missing
 
 
+# ── Investment Profile ───────────────────────────────────────────────
+
+
+class InvestmentProfile(BaseModel):
+    """Structured investment profile for personal suitability assessment."""
+    investment_horizon: Literal["short", "medium", "long", ""] = ""
+    risk_tolerance: Literal["low", "medium", "high", ""] = ""
+    experience_level: Literal["novice", "some", "experienced", ""] = ""
+    max_acceptable_drawdown: Literal["10%", "30%", "50%+", ""] = ""
+    runway_months: float | None = Field(default=None, ge=0, le=120)
+    has_debt: bool | None = None
+    has_dependents: bool | None = None
+    monthly_investable_amount: str = ""
+
+
+class InvestmentProfileUpdate(BaseModel):
+    user_id: str
+    profile: InvestmentProfile
+
+
 class APIResponse(BaseModel):
     success: bool
     data: dict | None = None

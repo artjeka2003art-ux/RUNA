@@ -3,6 +3,23 @@
 
 # ── Person ──────────────────────────────────────────────────────────
 
+def get_investment_profile(user_id: str) -> tuple[str, dict]:
+    query = """
+    MATCH (p:Person {user_id: $user_id})
+    RETURN p.investment_profile AS investment_profile
+    """
+    return query, {"user_id": user_id}
+
+
+def save_investment_profile(user_id: str, profile_json: str) -> tuple[str, dict]:
+    query = """
+    MATCH (p:Person {user_id: $user_id})
+    SET p.investment_profile = $profile_json, p.updated_at = datetime()
+    RETURN p.investment_profile AS investment_profile
+    """
+    return query, {"user_id": user_id, "profile_json": profile_json}
+
+
 def create_person(user_id: str, name: str) -> tuple[str, dict]:
     query = """
     MERGE (p:Person {user_id: $user_id})

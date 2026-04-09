@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 _COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 _TIMEOUT = 8.0
+_CACHE_TTL = 60  # seconds — CoinGecko data refreshes ~every minute
+
+# Simple in-memory TTL cache: key (sorted asset ids) → (timestamp, data)
+_market_cache: dict[str, tuple[float, list[dict]]] = {}
 
 # ── Asset recognition ────────────────────────────────────────────────
 
@@ -100,14 +105,21 @@ def detect_assets(question: str) -> list[str]:
 async def fetch_market_data(asset_ids: list[str]) -> list[dict]:
     """Fetch market data from CoinGecko for given asset IDs.
 
-    Returns list of dicts with: id, symbol, name, current_price, price_change_24h,
-    price_change_percentage_24h, price_change_percentage_7d, market_cap, total_volume,
-    last_updated.
+    Uses in-memory TTL cache (60s) to reduce API calls and avoid rate limits.
     """
     if not asset_ids:
         return []
 
-    ids_str = ",".join(asset_ids[:5])  # max 5 assets
+    cache_key = ",".join(sorted(asset_ids[:5]))
+    now = time.monotonic()
+
+    # Check cache
+    cached = _market_cache.get(cache_key)
+    if cached and now - cached[0] < _CACHE_TTL:
+        logger.debug("CoinGecko cache hit for %s", cache_key)
+        return cached[1]
+
+    ids_str = ",".join(asset_ids[:5])
     url = (
         f"{_COINGECKO_BASE}/coins/markets"
         f"?vs_currency=usd"
@@ -122,14 +134,17 @@ async def fetch_market_data(asset_ids: list[str]) -> list[dict]:
             resp = await client.get(url, headers={"Accept": "application/json"})
             if resp.status_code == 429:
                 logger.warning("CoinGecko rate limited")
-                return []
+                # Return stale cache if available
+                return cached[1] if cached else []
             if resp.status_code != 200:
                 logger.warning("CoinGecko returned %d", resp.status_code)
-                return []
-            return resp.json()
+                return cached[1] if cached else []
+            data = resp.json()
+            _market_cache[cache_key] = (now, data)
+            return data
     except Exception:
         logger.warning("CoinGecko fetch failed", exc_info=True)
-        return []
+        return cached[1] if cached else []
 
 
 # ── Signal construction ──────────────────────────────────────────────
