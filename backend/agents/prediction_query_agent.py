@@ -26,6 +26,10 @@ from backend.osint.adapters.market_sentiment import get_sentiment_signals
 from backend.osint.fusion.investment import fuse_investment_signals, InvestmentFusion
 from backend.osint.fusion.personal_investment import extract_constraints, build_constraints, assess_suitability
 from backend.osint.fusion.investment_policy import compute_investment_policy, ACTION_LABELS, EXPOSURE_LABELS
+from backend.reasoning.affordability import (
+    build_affordability_context,
+    AFFORDABILITY_NONE,
+)
 
 _FETCH_TIMEOUT = 6.0
 _MAX_TEXT_PER_SOURCE = 3000
@@ -3293,6 +3297,27 @@ Decision mode: {mode}
         except Exception:
             logger.warning("Fact promotion failed", exc_info=True)
 
+        # Affordability / expense reasoning (uses persistent facts)
+        affordability_ctx = None
+        try:
+            # Use promoted_all (post-promotion state) so new facts are included.
+            # If we couldn't load any, still try with empty list — detector runs anyway.
+            affordability_ctx = build_affordability_context(
+                question, variants, promoted_all or [],
+            )
+            if affordability_ctx.question_subtype != AFFORDABILITY_NONE:
+                block = affordability_ctx.to_synthesis_block()
+                if block:
+                    personal_context += block
+                logger.info(
+                    "Affordability: subtype=%s, posture=%s, confidence=%s",
+                    affordability_ctx.question_subtype,
+                    affordability_ctx.posture,
+                    affordability_ctx.confidence,
+                )
+        except Exception:
+            logger.warning("Affordability reasoning failed", exc_info=True)
+
         # Personal investment suitability (investment mode only)
         result_extras: dict = {}
         if question_mode == QuestionMode.investment:
@@ -3422,6 +3447,8 @@ Decision mode: {mode}
         result["hard_fact_violations"] = [v.to_dict() for v in hf_violations]
         result["promoted_facts"] = promoted_all
         result["newly_promoted_facts"] = promoted_now
+        if affordability_ctx and affordability_ctx.question_subtype != AFFORDABILITY_NONE:
+            result["affordability"] = affordability_ctx.to_dict()
         result["question_type"] = question_type
         result["question_mode"] = question_mode.value
         result["variants"] = variants

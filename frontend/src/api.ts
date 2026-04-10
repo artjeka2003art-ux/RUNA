@@ -282,6 +282,33 @@ export interface DocumentCandidate {
   selected_by?: "primary_routing" | "rescue_routing";
 }
 
+export interface AffordabilitySignal {
+  question_subtype: "none" | "large_purchase" | "recurring_cost" | "general_affordability";
+  amount_hint: string;
+  currency_hint: string;
+  known_facts: {
+    salary: { present: boolean; value: string; source: string };
+    bonus: { present: boolean; value: string; source: string };
+    savings: { present: boolean; value: string; source: string };
+    debt: { present: boolean; value: string; source: string };
+    budget: { present: boolean; value: string; source: string };
+  };
+  employment_risk: {
+    in_probation: boolean;
+    probation_value: string;
+    has_non_compete: boolean;
+    non_compete_value: string;
+    has_notice_period: boolean;
+    notice_period_value: string;
+  };
+  posture: "insufficient_data" | "clearly_affordable" | "likely_affordable_with_caveats" | "borderline" | "likely_stretched" | "clearly_risky";
+  main_limiters: string[];
+  what_makes_affordable: string[];
+  what_makes_risky: string[];
+  missing_financial_facts: string[];
+  confidence: "low" | "medium" | "high";
+}
+
 export interface WorkspaceResult {
   question: string;
   question_type: string;
@@ -299,6 +326,7 @@ export interface WorkspaceResult {
   document_candidates?: DocumentCandidate[];
   promoted_facts?: PromotedFact[];
   newly_promoted_facts?: PromotedFact[];
+  affordability?: AffordabilitySignal;
   _quality?: PredictionQuality;
   signal_quality?: string;
   signal_coverage?: string;

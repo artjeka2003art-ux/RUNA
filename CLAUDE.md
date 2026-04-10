@@ -1008,60 +1008,60 @@ If a design choice makes future English-first or multilingual operation harder, 
 
 # Internationalization Enforcement (operational)                                                                      
                                                                                                                         
-  Runa is being built as a global product. The full i18n design rules live in `RUNA_PRODUCT_BLUEPRINT.md` — see the     
-  section on multilingual / canonical representation.                                                                   
+Runa is being built as a global product. The full i18n design rules live in `RUNA_PRODUCT_BLUEPRINT.md` — see the     
+section on multilingual / canonical representation.                                                                   
                                                                                                                         
-  These rules are NOT aspirational. They are operationally binding for every step.
+These rules are NOT aspirational. They are operationally binding for every step.
 
-  ## Hard requirements for every change                                                                                 
+## Hard requirements for every change                                                                                 
    
-  Before writing any code in a new step, check:                                                                         
+Before writing any code in a new step, check:                                                                         
                                                                 
-  1. Все новые `fact_key`, `state`, `enum`, `mode`, `evidence_type`, `routing category`, `document_type`, API endpoint  
-  names, JSON field names — только canonical English. Никакого русского в identifiers.
-  2. Новые UI строки не хардкодятся прямо в JSX. Если центрального labels layer ещё нет — собери их в локальный         
-  constants block в начале компонента с английскими ключами, и отметь в отчёте как "temporary inline dictionary".       
-  3. LLM outputs, которые влияют на persistence / state / routing / supersede, должны быть constrained в canonical enums
-   или structured JSON. Никакого free-text как system-of-record.                                                        
-  4. Keyword-based heuristics (adoption signals, sphere synonyms, mode hints и т.д.) — держи изолированно в отдельных
-  константах, помечай комментарием `# LANG-FALLBACK`, и добавляй минимум RU + EN keywords когда это дёшево.             
-  5. Document pipeline logic не должен предполагать, что документы на том же языке, что и вопрос пользователя.
-  6. Запрещено: русские строки как dictionary keys, как state values, как supersede identity, как branching conditions в
-   core pipeline.                                                                                                       
+1. Все новые `fact_key`, `state`, `enum`, `mode`, `evidence_type`, `routing category`, `document_type`, API endpoint  
+names, JSON field names — только canonical English. Никакого русского в identifiers.
+2. Новые UI строки не хардкодятся прямо в JSX. Если центрального labels layer ещё нет — собери их в локальный         
+constants block в начале компонента с английскими ключами, и отметь в отчёте как "temporary inline dictionary".       
+3. LLM outputs, которые влияют на persistence / state / routing / supersede, должны быть constrained в canonical enums
+или structured JSON. Никакого free-text как system-of-record.                                                        
+4. Keyword-based heuristics (adoption signals, sphere synonyms, mode hints и т.д.) — держи изолированно в отдельных
+константах, помечай комментарием `# LANG-FALLBACK`, и добавляй минимум RU + EN keywords когда это дёшево.             
+5. Document pipeline logic не должен предполагать, что документы на том же языке, что и вопрос пользователя.
+6. Запрещено: русские строки как dictionary keys, как state values, как supersede identity, как branching conditions в
+core pipeline.                                                                                                       
                                                                                                                         
-  ## Mandatory report section                                                                                           
+## Mandatory report section                                                                                           
                                                                 
-  В финальном отчёте каждого шага ОБЯЗАТЕЛЬНА отдельная секция:                                                         
+В финальном отчёте каждого шага ОБЯЗАТЕЛЬНА отдельная секция:                                                         
   
-  **"Russian-specific surface introduced in this step"**                                                                
+**"Russian-specific surface introduced in this step"**                                                                
                                                                 
-  Она должна содержать:                                                                                                 
+Она должна содержать:                                                                                                 
   - Список всех русских строк / keyword lists / prompts / UI labels, введённых в этом шаге
   - Для каждого: почему это было необходимо                                                                             
   - Для каждого: как это должно быть обобщено позже (central labels, multilingual keywords, language-aware prompt,      
   canonical classifier)                                                                                                 
                                                                                                                         
-  Если ничего русско-специфичного не введено — явно написать "No Russian-specific surface introduced in this step."     
+Если ничего русско-специфичного не введено — явно написать "No Russian-specific surface introduced in this step."     
                                                                 
-  Эта секция не опциональна. Отчёт без неё считается неполным.                                                          
+Эта секция не опциональна. Отчёт без неё считается неполным.                                                          
                                                                 
-  ## Promotion path for language-specific code                                                                          
+## Promotion path for language-specific code                                                                          
                                                                 
-  Когда вводишь что-то временно русско-специфичное, всегда думай о следующем уровне:                                    
+Когда вводишь что-то временно русско-специфичное, всегда думай о следующем уровне:                                    
                                                                 
-  1. Temporary Russian-only heuristic (explicitly labeled `# LANG-FALLBACK`)                                            
-  2. Multilingual keyword set (RU + EN minimum)                 
-  3. Canonical classifier / constrained LLM mapping                                                                     
-  4. Fully i18n-safe version (central labels layer + language-aware prompts)                                            
+1. Temporary Russian-only heuristic (explicitly labeled `# LANG-FALLBACK`)                                            
+2. Multilingual keyword set (RU + EN minimum)                 
+3. Canonical classifier / constrained LLM mapping                                                                     
+4. Fully i18n-safe version (central labels layer + language-aware prompts)                                            
   
-  Шаг может оставить уровень 1 или 2, но только если код изолирован и отчёт явно говорит, что остаётся сделать.         
+Шаг может оставить уровень 1 или 2, но только если код изолирован и отчёт явно говорит, что остаётся сделать.         
                                                                 
-  ## Filter question for every change                                                                                   
+## Filter question for every change                                                                                   
                                                                 
-  Перед любым изменением дополнительно к главному фильтру спроси:                                                       
+Перед любым изменением дополнительно к главному фильтру спроси:                                                       
                                                                 
-  **"Не делает ли это будущее переключение основного языка на английский сложнее?"**                                    
+**"Не делает ли это будущее переключение основного языка на английский сложнее?"**                                    
                                                                 
-  Если да — переделай, либо явно обоснуй в отчёте почему это необходимо и как это будет обобщено позже.                 
+Если да — переделай, либо явно обоснуй в отчёте почему это необходимо и как это будет обобщено позже.                 
                                                                 
-  Цель — не "full i18n прямо сейчас". Цель — **ни один новый шаг не должен усложнять будущий переход**. 
+Цель — не "full i18n прямо сейчас". Цель — **ни один новый шаг не должен усложнять будущий переход**. 

@@ -16,12 +16,118 @@ import {
   type InvestmentPolicyData,
   type DocumentEvidenceReport,
   type PromotedFact,
+  type AffordabilitySignal,
   confirmPromotedFact,
   dismissPromotedFact,
   deactivatePromotedFact,
   invalidateDocumentFacts,
 } from "./api";
 import type { DecisionBridge } from "./App";
+
+
+// LANG-FALLBACK: user-facing labels in Russian for current tests.
+// Should move to central labels layer for multilingual support.
+const AFFORDABILITY_POSTURE_LABELS_RU: Record<AffordabilitySignal["posture"], string> = {
+  insufficient_data: "Недостаточно данных",
+  clearly_affordable: "Явно позволительно",
+  likely_affordable_with_caveats: "Вероятно позволительно",
+  borderline: "Пограничный случай",
+  likely_stretched: "На пределе",
+  clearly_risky: "Явно рискованно",
+};
+
+const AFFORDABILITY_SUBTYPE_LABELS_RU: Record<AffordabilitySignal["question_subtype"], string> = {
+  none: "",
+  large_purchase: "Крупная покупка",
+  recurring_cost: "Рекуррентный расход",
+  general_affordability: "Общая affordability",
+};
+
+function AffordabilityBlock({ signal }: { signal: AffordabilitySignal }) {
+  const postureLabel = AFFORDABILITY_POSTURE_LABELS_RU[signal.posture] || signal.posture;
+  const subtypeLabel = AFFORDABILITY_SUBTYPE_LABELS_RU[signal.question_subtype] || signal.question_subtype;
+  const isRisky = ["likely_stretched", "clearly_risky"].includes(signal.posture);
+  const isAffordable = ["clearly_affordable", "likely_affordable_with_caveats"].includes(signal.posture);
+
+  return (
+    <div className={`ws-block ws-affordability ws-affordability-${signal.posture}`}>
+      <h3 className="ws-block-title">
+        Оценка affordability
+        <span className="ws-affordability-subtype">{subtypeLabel}</span>
+      </h3>
+      <div className="ws-affordability-posture">
+        <span className={`ws-affordability-posture-badge ws-affordability-${isRisky ? "risky" : isAffordable ? "safe" : "neutral"}`}>
+          {postureLabel}
+        </span>
+        <span className="ws-affordability-confidence">confidence: {signal.confidence}</span>
+        {signal.amount_hint && (
+          <span className="ws-affordability-amount">{signal.amount_hint} {signal.currency_hint}</span>
+        )}
+      </div>
+
+      {(signal.known_facts.salary.present || signal.known_facts.savings.present || signal.known_facts.budget.present || signal.known_facts.debt.present) && (
+        <div className="ws-affordability-section">
+          <div className="ws-affordability-section-title">Известные факты</div>
+          <div className="ws-affordability-facts">
+            {signal.known_facts.salary.present && (
+              <div className="ws-affordability-fact">💼 Доход: <b>{signal.known_facts.salary.value}</b></div>
+            )}
+            {signal.known_facts.savings.present && (
+              <div className="ws-affordability-fact">💰 Накопления: <b>{signal.known_facts.savings.value}</b></div>
+            )}
+            {signal.known_facts.budget.present && (
+              <div className="ws-affordability-fact">📊 Бюджет: <b>{signal.known_facts.budget.value}</b></div>
+            )}
+            {signal.known_facts.debt.present && (
+              <div className="ws-affordability-fact">⚠️ Долг: <b>{signal.known_facts.debt.value}</b></div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {(signal.employment_risk.in_probation || signal.employment_risk.has_non_compete) && (
+        <div className="ws-affordability-section">
+          <div className="ws-affordability-section-title">Риск занятости</div>
+          <div className="ws-affordability-facts">
+            {signal.employment_risk.in_probation && (
+              <div className="ws-affordability-risk">🔸 Испытательный срок: {signal.employment_risk.probation_value}</div>
+            )}
+            {signal.employment_risk.has_non_compete && (
+              <div className="ws-affordability-risk">🔸 Non-compete: {signal.employment_risk.non_compete_value}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {signal.what_makes_affordable.length > 0 && (
+        <div className="ws-affordability-section">
+          <div className="ws-affordability-section-title">В пользу</div>
+          <ul className="ws-affordability-list">
+            {signal.what_makes_affordable.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {signal.what_makes_risky.length > 0 && (
+        <div className="ws-affordability-section">
+          <div className="ws-affordability-section-title">Риски</div>
+          <ul className="ws-affordability-list ws-affordability-list-risky">
+            {signal.what_makes_risky.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {signal.missing_financial_facts.length > 0 && (
+        <div className="ws-affordability-section">
+          <div className="ws-affordability-section-title">Чего не хватает для точности</div>
+          <ul className="ws-affordability-list ws-affordability-list-missing">
+            {signal.missing_financial_facts.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 
 function PromotedFactsBlock({ facts, newCount, userId }: { facts: PromotedFact[]; newCount: number; userId: string }) {
@@ -956,6 +1062,11 @@ export default function PredictionView({
               newCount={result.newly_promoted_facts?.length || 0}
               userId={userId}
             />
+          )}
+
+          {/* Affordability / expense analysis */}
+          {result.affordability && result.affordability.question_subtype !== "none" && (
+            <AffordabilityBlock signal={result.affordability} />
           )}
 
           {/* No useful documents notice */}

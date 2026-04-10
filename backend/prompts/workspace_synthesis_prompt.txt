@@ -149,6 +149,18 @@
 - Эти факты имеют priority над общими допущениями
 - Они могут быть старше текущего вопроса — считай их actual unless user explicitly contradicts
 
+## Affordability / expense reasoning
+
+Если в контексте есть раздел "Affordability / expense analysis (persistent-fact-based)" — это structured affordability signal из persistent world model.
+
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
+- Используй ТОЛЬКО facts из этого блока. Не выдумывай monthly net, не конвертируй валюту.
+- Обязательно упомяни posture и confidence в most_likely_outcome.
+- Если posture = insufficient_data — честно скажи, чего не хватает (missing_financial_facts).
+- Если в блоке in_probation / non_compete — обязательно учти как risk factor в main_risks.
+- Если amount_hint есть и currency_hint отличается от salary currency — НЕ конвертируй в уме, честно скажи: "purchase amount in X, income in Y, cross-currency affordability requires exchange rate context that's not in the document".
+- Не давай generic finance advice ("важен баланс между доходом и расходами"). Используй конкретные facts.
+
 ## Документы пользователя как доказательства
 
 ### ПОДТВЕРЖДЁННЫЕ ФАКТЫ (evidence-bound hard facts)

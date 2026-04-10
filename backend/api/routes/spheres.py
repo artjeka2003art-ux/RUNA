@@ -260,12 +260,47 @@ async def list_documents(sphere_id: str, user_id: str, request: Request):
 
 @router.delete("/{sphere_id}/documents/{doc_id}", response_model=APIResponse)
 async def delete_document(sphere_id: str, doc_id: str, user_id: str, request: Request):
-    """Delete a document from a sphere."""
+    """Delete a document from a sphere.
+
+    Side effect: auto-invalidate all promoted facts sourced from this document.
+    Any promoted fact with matching source_document_id and state in
+    {active, pending_confirmation, user_confirmed} transitions to
+    `invalidated_by_document` with reason `document_deleted`.
+    """
     doc_store = request.app.state.document_store
     ok = await doc_store.delete_document(user_id, sphere_id, doc_id)
     if not ok:
         return APIResponse(success=False, error="Документ не найден")
-    return APIResponse(success=True, data={"deleted": True})
+
+    # Auto-invalidate promoted facts from this source document
+    invalidated_count = 0
+    try:
+        import json as _json
+        from backend.graph import graph_queries as _gq
+        from backend.agents.prediction_query_agent import invalidate_facts_by_document
+
+        graph = request.app.state.neo4j
+        q, p = _gq.get_promoted_facts(user_id)
+        rows = await graph.execute_query(q, p)
+        if rows and rows[0].get("promoted_facts"):
+            facts = _json.loads(rows[0]["promoted_facts"])
+            updated, count = invalidate_facts_by_document(
+                facts, doc_id, reason="document_deleted",
+            )
+            if count > 0:
+                save_q, save_p = _gq.save_promoted_facts(
+                    user_id, _json.dumps(updated, ensure_ascii=False),
+                )
+                await graph.execute_query(save_q, save_p)
+                invalidated_count = count
+    except Exception:
+        # Deletion already succeeded; fact cleanup is best-effort
+        pass
+
+    return APIResponse(success=True, data={
+        "deleted": True,
+        "invalidated_facts_count": invalidated_count,
+    })
 
 
 # ── Adaptive Enrichment Prompts ──
