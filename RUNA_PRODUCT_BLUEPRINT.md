@@ -1380,3 +1380,159 @@ Runa — это не mental wellness toy.
 ## Decision-specific Personal OSINT
 =
 ## Prediction, который реально ощущается полезным именно мне
+
+
+
+ # Rule: Every New Feature Must Be i18n-Ready by Default
+
+  Runa is being built as a global product. Russian is the current primary working language, but English must be
+  promotable to primary language without backend rewrites.
+
+  Every new step must respect the following rules. If a step cannot respect them, the report must explicitly flag what
+  was left as language-specific and why.
+
+  ## Hard rules for any new code
+
+  ### 1. Internal model stays canonical (English, language-agnostic)
+  New entities, enums, states, keys, types, contracts, routing categories, schemas, database fields must use stable
+  English-based canonical names.
+
+  Forbidden:
+  - Russian strings as enum values
+  - Russian keys in JSON schemas
+  - Russian-based fact_key / state / mode values
+  - Business logic branching on Russian substrings as the source of truth
+
+  Required:
+  - Canonical English identifiers (`financial.base_salary`, `adoption_state = adopted`, `selected_by = primary_routing`,
+   `state = invalidated_by_document`)
+  - Constrained enums / Literal types over free text
+  - Stable machine-readable values independent of display language
+
+  ### 2. No hardcoded Russian in UI components
+  New frontend code must not embed Russian strings directly in JSX/TSX component bodies.
+
+  Required:
+  - All user-visible strings go through a centralized labels layer (e.g. `frontend/src/labels.ts` or equivalent)
+  - Components reference labels by stable keys: `t("promoted_facts.title")`, not `"Персистентные факты"` inline
+  - Field `id` / `key` / `data-*` attributes stay canonical English, separate from display text
+
+  If the labels layer does not yet exist when a step needs UI strings:
+  - Still define a local constants block at the top of the component with English keys → Russian values
+  - Report this as "temporary inline dictionary, should move to central labels layer later"
+  - Do NOT scatter raw Russian strings across JSX
+
+  ### 3. Prompts must not assume Russian-only operation
+  LLM prompts may currently be written in Russian when helpful, but:
+
+  Forbidden:
+  - Prompt instructions that require the user input to be in Russian
+  - Prompt outputs that return Russian free text as a system contract
+  - Extraction targets that only work on Russian phrasing
+
+  Required:
+  - Prompt outputs constrained to canonical enums / keys / structured JSON
+  - Extraction logic that works on the language of the document, not a fixed language
+  - Prompts designed so that the same internal fact can come from an English, Russian, or Spanish document
+  - Where classification is needed, use constrained output (enum choice) instead of free text
+
+  ### 4. Heuristic keyword matching must be isolated and clearly labeled
+  Sometimes a pragmatic step needs keyword matching in multiple languages (e.g. "accepted" / "принял" / "aceptado").
+
+  Required:
+  - Keep keyword lists in small isolated modules or constants, not spread across business logic
+  - Clearly label them in comments as `# LANG-FALLBACK: keyword heuristic, replace with canonical classifier later`
+  - Include multiple languages in the list when feasible (RU + EN minimum; ES if obvious)
+  - Never make keyword matching the only path — always have an LLM classifier / canonical mapper on top when the signal
+  matters for persistent state
+
+  ### 5. Document language is independent of user language
+  New document pipeline logic must not assume that documents are in the same language as the user question.
+
+  Required:
+  - Evidence extraction must work on any language the document is in
+  - Canonical fact keys must normalize facts from different-language documents to the same key
+  - UI rendering of facts must not depend on the document source language
+
+  ### 6. New states, actions, fields must be canonical English
+  When adding a new state, lifecycle transition, action type, or persistent field:
+
+  Required:
+  - Name it in canonical English (`invalidated_by_document`, `rescue_routing`, `pending_confirmation`)
+  - Use it in the same form in backend, API, frontend types, and storage
+  - Any user-visible label is a SEPARATE translation, not the canonical value itself
+
+  Forbidden:
+  - Russian state names even temporarily
+  - Frontend types that mirror backend state with different (translated) values
+
+  ### 7. New API endpoints and payloads stay canonical
+  Required:
+  - Endpoint paths in English: `/promoted-facts/invalidate-document`
+  - Payload field names in English: `source_document_id`, `reason`
+  - Response shapes in English keys
+  - Optional `language` hint field if the behavior depends on user language
+
+  ### 8. LLM outputs as system contracts must be constrained
+  If an LLM output drives business logic (persistence, state change, routing, supersede, etc.):
+
+  Required:
+  - Constrain output to a fixed enum / canonical key / structured JSON
+  - Validate output against the canonical set; reject free text
+  - Never persist LLM free-text output as a system-of-record identifier
+
+  Forbidden:
+  - Saving the raw LLM Russian (or English) phrase as a canonical fact key
+  - Routing logic that matches substrings of LLM Russian free text
+
+  ### 9. Report must flag any Russian-specific code introduced
+  At the end of every step report, include a section:
+
+  "Russian-specific surface introduced in this step:
+  - list each Russian string / keyword list / prompt / UI label
+  - explain why it was necessary
+  - describe how it should be generalized later (central labels, multilingual keywords, language-aware prompt, canonical
+   classifier)"
+
+  If nothing Russian-specific was introduced, state that explicitly.
+
+  ### 10. Promotion path for any Russian-specific code
+  Preferred progression for any temporary language-specific code:
+
+  1. Temporary Russian-only heuristic (explicitly labeled `# LANG-FALLBACK`)
+  2. Multilingual keyword set (RU + EN minimum)
+  3. Canonical classifier / LLM mapping / structured extractor
+  4. Fully i18n-safe version (central labels layer / language-aware prompts)
+
+  A step may introduce level 1 or 2, but only if the code is isolated and the report explicitly notes what remains to be
+   done.
+
+  ### 11. Forbidden cross-cutting patterns
+  These patterns must never be introduced, even as "temporary":
+
+  - Russian-only branching inside core reasoning pipeline
+  - Russian strings as dictionary keys or JSON field names
+  - Russian state values in PromotedFact / ScenarioReport / WorkspaceResponse / any persistent model
+  - Russian wording as the supersede / identity check for any entity
+  - Russian-only prompt outputs that drive state transitions
+  - Mixing Russian keys with English keys in the same structured schema
+
+  ### 12. When in doubt
+  If you are uncertain whether a new addition is i18n-safe, default to the stricter choice:
+  - canonical English internal names
+  - central labels layer for any UI string
+  - constrained LLM output
+  - multilingual keyword fallbacks
+  - explicit report flag
+
+  The goal is not "full i18n right now". The goal is: **no new step makes future English-first operation harder**.
+
+  ### 13. Architecture target (keep this in mind every step)
+  The target architecture is:
+
+  multilingual input (RU/EN/ES documents, user messages)
+      → canonical internal model (English keys, enums, states)
+      → multilingual output (labels layer, language-aware prompts)                                                      
+     
+  Any step that makes this harder — even pragmatically — must be justified in the report and marked for later cleanup.  
+                                         

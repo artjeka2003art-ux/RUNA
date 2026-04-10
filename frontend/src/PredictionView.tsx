@@ -15,8 +15,119 @@ import {
   type TypedMissingField,
   type InvestmentPolicyData,
   type DocumentEvidenceReport,
+  type PromotedFact,
+  confirmPromotedFact,
+  dismissPromotedFact,
+  deactivatePromotedFact,
+  invalidateDocumentFacts,
 } from "./api";
 import type { DecisionBridge } from "./App";
+
+
+function PromotedFactsBlock({ facts, newCount, userId }: { facts: PromotedFact[]; newCount: number; userId: string }) {
+  const [localFacts, setLocalFacts] = useState<PromotedFact[]>(facts);
+  const [pending, setPending] = useState<string | null>(null);
+
+  useEffect(() => { setLocalFacts(facts); }, [facts]);
+
+  async function handleAction(fact: PromotedFact, action: "confirm" | "dismiss" | "deactivate") {
+    const key = `${fact.fact_key}|${fact.source_document_id}`;
+    setPending(key);
+    try {
+      const fn = action === "confirm" ? confirmPromotedFact : action === "dismiss" ? dismissPromotedFact : deactivatePromotedFact;
+      const res = await fn(userId, fact.fact_key, fact.source_document_id);
+      if (res.success && res.data?.promoted_facts) {
+        const visible = res.data.promoted_facts.filter((f: PromotedFact) => ["active", "pending_confirmation", "user_confirmed"].includes(f.state));
+        setLocalFacts(visible);
+      }
+    } catch { /* ignore */ }
+    setPending(null);
+  }
+
+  async function handleInvalidateDocument(sourceDocumentId: string, docName: string) {
+    if (!confirm(`Отключить все факты из документа «${docName}»? Они перестанут использоваться в будущих вопросах.`)) return;
+    const key = `doc|${sourceDocumentId}`;
+    setPending(key);
+    try {
+      const res = await invalidateDocumentFacts(userId, sourceDocumentId, "user invalidated document source");
+      if (res.success && res.data?.promoted_facts) {
+        const visible = res.data.promoted_facts.filter((f: PromotedFact) => ["active", "pending_confirmation", "user_confirmed"].includes(f.state));
+        setLocalFacts(visible);
+      }
+    } catch { /* ignore */ }
+    setPending(null);
+  }
+
+  if (localFacts.length === 0) return null;
+
+  // Group facts by source document
+  const groups = new Map<string, { docName: string; docId: string; facts: PromotedFact[] }>();
+  for (const f of localFacts) {
+    const gid = f.source_document_id || f.source_document_name || "unknown";
+    if (!groups.has(gid)) {
+      groups.set(gid, { docName: f.source_document_name || "unknown", docId: f.source_document_id, facts: [] });
+    }
+    groups.get(gid)!.facts.push(f);
+  }
+
+  return (
+    <div className="ws-block ws-promoted-facts">
+      <h3 className="ws-block-title">
+        Персистентные факты из ваших документов
+        {newCount > 0 && <span className="ws-promoted-new-badge">+{newCount} новых</span>}
+      </h3>
+      <p className="ws-promoted-hint">Подтверждённые факты используются во всех будущих вопросах. Pending — ожидают вашего подтверждения.</p>
+      {Array.from(groups.values()).map((group, gi) => {
+        const docBusy = pending === `doc|${group.docId}`;
+        return (
+          <div key={gi} className="ws-promoted-doc-group">
+            <div className="ws-promoted-doc-header">
+              <span className="ws-promoted-doc-name">📄 {group.docName}</span>
+              <span className="ws-promoted-doc-count">{group.facts.length} {group.facts.length === 1 ? "факт" : "фактов"}</span>
+              {group.docId && (
+                <button
+                  className="ws-promoted-btn ws-promoted-btn-invalidate-doc"
+                  disabled={docBusy}
+                  onClick={() => handleInvalidateDocument(group.docId, group.docName)}
+                  title="Отключить весь документ как источник активных фактов"
+                >
+                  {docBusy ? "Отключаем…" : "Документ неактуален"}
+                </button>
+              )}
+            </div>
+            <div className="ws-promoted-list">
+              {group.facts.map((f, i) => {
+                const key = `${f.fact_key}|${f.source_document_id}`;
+                const isPending = f.state === "pending_confirmation";
+                const isConfirmed = f.state === "user_confirmed";
+                const busy = pending === key;
+                return (
+                  <div key={i} className={`ws-promoted-item ws-promoted-state-${f.state}`}>
+                    <span className="ws-promoted-key">{f.fact_key}</span>
+                    <span className="ws-promoted-value">{f.fact_value}</span>
+                    {isPending && <span className="ws-promoted-state-badge ws-state-pending">ожидает подтверждения</span>}
+                    {isConfirmed && <span className="ws-promoted-state-badge ws-state-confirmed">вы подтвердили</span>}
+                    <div className="ws-promoted-actions">
+                      {isPending && (
+                        <>
+                          <button className="ws-promoted-btn ws-promoted-btn-confirm" disabled={busy} onClick={() => handleAction(f, "confirm")}>Подтвердить</button>
+                          <button className="ws-promoted-btn ws-promoted-btn-dismiss" disabled={busy} onClick={() => handleAction(f, "dismiss")}>Отклонить</button>
+                        </>
+                      )}
+                      {(f.state === "active" || isConfirmed) && (
+                        <button className="ws-promoted-btn ws-promoted-btn-deactivate" disabled={busy} onClick={() => handleAction(f, "deactivate")} title="Отметить как неактуальный">Неактуально</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ── Typed missing context field configs ──
 // Mode-specific field definitions for structured capture.
@@ -838,6 +949,15 @@ export default function PredictionView({
             </div>
           )}
 
+          {/* Promoted persistent facts with state + user control */}
+          {result.promoted_facts && result.promoted_facts.filter(f => ["active", "pending_confirmation", "user_confirmed"].includes(f.state)).length > 0 && (
+            <PromotedFactsBlock
+              facts={result.promoted_facts.filter(f => ["active", "pending_confirmation", "user_confirmed"].includes(f.state))}
+              newCount={result.newly_promoted_facts?.length || 0}
+              userId={userId}
+            />
+          )}
+
           {/* No useful documents notice */}
           {result.document_evidence && !result.document_evidence.has_relevant_evidence && result.documents_used && result.documents_used.length > 0 && (
             <div className="ws-block ws-doc-evidence ws-doc-evidence-empty">
@@ -859,9 +979,12 @@ export default function PredictionView({
                 <div className="ws-doc-routing">
                   <div className="ws-doc-routing-label">Документы</div>
                   {result.document_candidates.filter(c => c.selected_for_evidence).map((c, i) => (
-                    <div key={`sel-${i}`} className="ws-doc-routing-item ws-doc-routing-selected">
-                      <span className="ws-doc-routing-icon">&#10003;</span>
+                    <div key={`sel-${i}`} className={`ws-doc-routing-item ws-doc-routing-selected${c.selected_by === "rescue_routing" ? " ws-doc-routing-rescued" : ""}`}>
+                      <span className="ws-doc-routing-icon">{c.selected_by === "rescue_routing" ? "\u21BB" : "\u2713"}</span>
                       <span className="ws-doc-routing-name">{c.document_name}</span>
+                      {c.selected_by === "rescue_routing" && (
+                        <span className="ws-doc-routing-rescue-badge">rescue</span>
+                      )}
                       {c.document_type_hint && c.document_type_hint !== "unknown" && (
                         <span className="ws-doc-routing-type">{c.document_type_hint}</span>
                       )}

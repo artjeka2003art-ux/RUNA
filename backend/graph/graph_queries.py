@@ -20,6 +20,25 @@ def save_investment_profile(user_id: str, profile_json: str) -> tuple[str, dict]
     return query, {"user_id": user_id, "profile_json": profile_json}
 
 
+# ── Promoted document-backed facts ──────────────────────────────────
+
+def get_promoted_facts(user_id: str) -> tuple[str, dict]:
+    query = """
+    MATCH (p:Person {user_id: $user_id})
+    RETURN p.promoted_facts AS promoted_facts
+    """
+    return query, {"user_id": user_id}
+
+
+def save_promoted_facts(user_id: str, facts_json: str) -> tuple[str, dict]:
+    query = """
+    MATCH (p:Person {user_id: $user_id})
+    SET p.promoted_facts = $facts_json, p.updated_at = datetime()
+    RETURN p.promoted_facts AS promoted_facts
+    """
+    return query, {"user_id": user_id, "facts_json": facts_json}
+
+
 def create_person(user_id: str, name: str) -> tuple[str, dict]:
     query = """
     MERGE (p:Person {user_id: $user_id})

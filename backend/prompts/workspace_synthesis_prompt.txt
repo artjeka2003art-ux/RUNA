@@ -141,6 +141,14 @@
 
 {"restated_question": "...", "context_completeness": {"score": "...", "known_factors": ["..."], "missing": [{"what": "...", "why_important": "...", "sphere_hint": "...", "routing_mode": "existing_sphere|multiple_candidates|suggest_new_sphere", "candidate_spheres": [], "suggested_sphere_name": "", "routing_reason": "..."}]}, "reports": [{"variant_label": "...", "most_likely_outcome": "...", "alternative_outcome": "...", "main_risks": ["..."], "leverage_factors": [{"factor": "...", "direction": "...", "weight": "..."}], "primary_bottleneck": "...", "dominant_downside": "...", "non_obvious_insight": "...", "condition_that_changes_prediction": "...", "decision_signal": "...", "confidence": "...", "confidence_reason": "...", "affected_spheres": ["..."], "depends_on": "...", "next_step": "..."}], "comparison": {"summary": "...", "key_tradeoffs": ["..."], "safest_variant": "...", "highest_upside_variant": "...", "most_sensitive_factor": "...", "hidden_trap": "...", "ranking_variable": "..."}, "external_insights": "..."}
 
+## Персистентные факты (persistent world model)
+
+Если в контексте есть раздел "Подтверждённые факты из загруженных документов (persistent world model)" — это persistent promoted facts из ранее загруженных документов.
+- Они уже подтверждены пользователем как актуальное состояние жизни (принятый оффер, текущий работодатель и т.д.)
+- Используй их НАПРЯМУЮ: "учитывая вашу зарплату EUR 92,000..."
+- Эти факты имеют priority над общими допущениями
+- Они могут быть старше текущего вопроса — считай их actual unless user explicitly contradicts
+
 ## Документы пользователя как доказательства
 
 ### ПОДТВЕРЖДЁННЫЕ ФАКТЫ (evidence-bound hard facts)

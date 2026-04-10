@@ -351,6 +351,39 @@ class InvestmentProfileUpdate(BaseModel):
 # ── Document Evidence ───────────────────────────────────────────────
 
 
+class PromotedFact(BaseModel):
+    """A document-backed hard fact promoted to persistent personal world model.
+
+    State semantics (canonical English, language-agnostic):
+    - active: authoritative current truth, used in reasoning
+    - pending_confirmation: suggested but not yet confirmed, NOT in reasoning
+    - user_confirmed: explicitly confirmed by user, used in reasoning
+    - user_dismissed: explicitly rejected by user, not in reasoning
+    - deactivated: user marked as no longer current
+    - invalidated_by_document: deactivated as part of document-level invalidation
+    - superseded: replaced by a newer canonical fact with same key
+    - stale: automatically aged out (reserved for future use)
+    """
+    fact_key: str = ""  # canonical key, e.g. "financial.base_salary"
+    fact_value: str = ""  # exact value from document
+    fact_type: str = "other"  # financial_fact | constraint | timeline | condition | etc
+    source_document_id: str = ""
+    source_document_name: str = ""
+    source_evidence_exact_value: str = ""
+    source_sphere_name: str = ""
+    promoted_at: str = ""  # ISO timestamp
+    state: Literal[
+        "active", "pending_confirmation", "user_confirmed",
+        "user_dismissed", "deactivated", "invalidated_by_document",
+        "superseded", "stale",
+    ] = "active"
+    adoption_state: str = ""
+    superseded_at: str = ""
+    superseded_reason: str = ""
+    invalidated_at: str = ""
+    invalidated_reason: str = ""
+
+
 class DocumentCandidate(BaseModel):
     """Scored document candidate for evidence pipeline."""
     document_id: str = ""

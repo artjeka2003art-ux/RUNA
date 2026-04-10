@@ -801,3 +801,267 @@ Runa — это не mental wellness toy.
 - учитывать реальный внешний мир
 - сравнивать сценарии
 - принимать более сильные решения о своей жизни
+
+
+
+# Language / Internationalization / Canonical Representation Rules
+
+Runa is being built for a global product, even if the current working language is Russian.
+
+This means:
+
+## 1. Russian is NOT the source of truth
+Russian may be used:
+- in current UI copy
+- in user-facing explanations
+- in temporary prompts
+- in demo/test content
+
+But Russian must NOT become the canonical internal language of the system.
+
+The source of truth for internal system logic must be language-agnostic and preferably English-based.
+
+---
+
+## 2. Canonical internal representation must be English-based
+All core internal entities should use stable canonical English-style names:
+- enums
+- state values
+- fact keys
+- question modes
+- evidence types
+- routing categories
+- field keys
+- document type hints
+- internal labels used in logic
+- structured output schemas
+
+Examples:
+- `financial.base_salary`
+- `constraint.notice_period`
+- `employment.employer`
+- `adoption_state = adopted`
+- `question_mode = career`
+- `document_type = offer`
+
+Do NOT make Russian strings the thing that business logic depends on.
+
+---
+
+## 3. Never tie core logic to Russian wording if it can be avoided
+Avoid implementing product logic that depends on exact Russian phrases such as:
+- "я принял"
+- "оффер"
+- "зарплата"
+- "испытательный срок"
+- "увольнение"
+
+If a temporary heuristic is needed, keep it isolated and clearly marked as a language-specific fallback, not as the canonical design.
+
+Whenever possible:
+- use canonical keys
+- use structured classification
+- use constrained outputs
+- use language-agnostic representations
+- use multilingual mapping layers instead of hardcoded Russian logic
+
+---
+
+## 4. Separate internal logic from presentation language
+The system should be designed so that:
+- internal storage is canonical
+- internal reasoning contracts are canonical
+- display language is a separate layer
+
+This means:
+- backend fact/state keys stay stable
+- frontend labels are translatable
+- prompts can be adapted by language
+- the same internal fact should be renderable in Russian, English, Spanish, etc.
+
+For example:
+- internal: `financial.base_salary`
+- UI RU: "Базовая зарплата"
+- UI EN: "Base salary"
+- UI ES: "Salario base"
+
+---
+
+## 5. New features must be designed as multilingual-ready by default
+When adding new product logic, ask:
+- Is this implemented with canonical keys or Russian words?
+- Will this still work if the user asks in English?
+- Can this be rendered in multiple languages later without rewriting the backend?
+- Is the model output constrained to stable enums/keys rather than language-specific free text?
+
+Default preference:
+- canonical internal schemas
+- translatable UI text
+- multilingual-safe prompts
+- language-aware input/output handling
+- minimal reliance on one-language keyword heuristics
+
+---
+
+## 6. Prompts should not assume Russian-only operation
+Prompts may currently be written in Russian if helpful,
+but the prompt design should assume that later the system may need to:
+- read user input in English
+- read documents in English
+- respond in English
+- support mixed-language flows
+- support future Spanish and other languages
+
+So:
+- avoid embedding Russian-only assumptions into prompt logic
+- prefer canonical categories and structured outputs
+- keep extraction targets language-independent
+
+---
+
+## 7. If heuristics are unavoidable, isolate them
+Sometimes a pragmatic step may require keyword matching.
+
+If so:
+- keep heuristics isolated in small modules
+- make them easy to replace later
+- label them clearly as fallback logic
+- avoid spreading Russian-only keyword assumptions across the codebase
+
+Preferred progression:
+1. temporary heuristic fallback
+2. canonical classifier / structured mapping
+3. multilingual-safe version
+
+---
+
+## 8. UI copy must be easy to internationalize later
+Do not deeply hardcode Russian strings inside business logic.
+
+Prefer:
+- centralized labels
+- reusable text dictionaries
+- translatable component copy
+- stable frontend field ids separate from visible text
+
+Even if full i18n is not implemented yet, code should not make it painful later.
+
+---
+
+## 9. Document and fact systems must be multilingual-safe
+For documents, evidence, and persistent facts:
+- source documents may be in different languages
+- extracted facts must normalize into canonical internal keys
+- fact promotion must not depend on Russian phrasing only
+- document type detection should move toward canonical categories, not Russian wording
+- future reasoning should work even if the document is English and the user asks in Russian
+
+The target architecture is:
+multilingual input → canonical fact model → multilingual output
+
+---
+
+## 10. Prefer canonical enums over free-text labels
+Wherever possible, use:
+- fixed enums
+- constrained classes
+- canonical fact types
+- canonical document types
+- canonical state machines
+
+Avoid free-text labels as system contracts.
+Free text may be displayed to users, but internal logic should rely on stable machine-readable values.
+
+---
+
+## 11. Any new Russian-only implementation must be treated as temporary
+If a new step introduces Russian-only assumptions, explicitly say so in the report:
+- what is Russian-specific
+- why it was necessary for this step
+- how it should later be generalized
+
+Do not silently make Russian-only logic part of the long-term architecture.
+
+---
+
+## 12. Global-product rule
+Always design with this target in mind:
+
+- user language can vary
+- document language can vary
+- UI language can vary
+- internal model must remain stable
+
+The product should eventually support:
+- Russian
+- English
+- Spanish
+- mixed-language real-world usage
+
+Therefore the default design principle is:
+
+### canonical internal model, multilingual presentation layer
+
+If a design choice makes future English-first or multilingual operation harder, avoid it unless there is a very strong pragmatic reason.
+
+
+
+# Internationalization Enforcement (operational)                                                                      
+                                                                                                                        
+  Runa is being built as a global product. The full i18n design rules live in `RUNA_PRODUCT_BLUEPRINT.md` — see the     
+  section on multilingual / canonical representation.                                                                   
+                                                                                                                        
+  These rules are NOT aspirational. They are operationally binding for every step.
+
+  ## Hard requirements for every change                                                                                 
+   
+  Before writing any code in a new step, check:                                                                         
+                                                                
+  1. Все новые `fact_key`, `state`, `enum`, `mode`, `evidence_type`, `routing category`, `document_type`, API endpoint  
+  names, JSON field names — только canonical English. Никакого русского в identifiers.
+  2. Новые UI строки не хардкодятся прямо в JSX. Если центрального labels layer ещё нет — собери их в локальный         
+  constants block в начале компонента с английскими ключами, и отметь в отчёте как "temporary inline dictionary".       
+  3. LLM outputs, которые влияют на persistence / state / routing / supersede, должны быть constrained в canonical enums
+   или structured JSON. Никакого free-text как system-of-record.                                                        
+  4. Keyword-based heuristics (adoption signals, sphere synonyms, mode hints и т.д.) — держи изолированно в отдельных
+  константах, помечай комментарием `# LANG-FALLBACK`, и добавляй минимум RU + EN keywords когда это дёшево.             
+  5. Document pipeline logic не должен предполагать, что документы на том же языке, что и вопрос пользователя.
+  6. Запрещено: русские строки как dictionary keys, как state values, как supersede identity, как branching conditions в
+   core pipeline.                                                                                                       
+                                                                                                                        
+  ## Mandatory report section                                                                                           
+                                                                
+  В финальном отчёте каждого шага ОБЯЗАТЕЛЬНА отдельная секция:                                                         
+  
+  **"Russian-specific surface introduced in this step"**                                                                
+                                                                
+  Она должна содержать:                                                                                                 
+  - Список всех русских строк / keyword lists / prompts / UI labels, введённых в этом шаге
+  - Для каждого: почему это было необходимо                                                                             
+  - Для каждого: как это должно быть обобщено позже (central labels, multilingual keywords, language-aware prompt,      
+  canonical classifier)                                                                                                 
+                                                                                                                        
+  Если ничего русско-специфичного не введено — явно написать "No Russian-specific surface introduced in this step."     
+                                                                
+  Эта секция не опциональна. Отчёт без неё считается неполным.                                                          
+                                                                
+  ## Promotion path for language-specific code                                                                          
+                                                                
+  Когда вводишь что-то временно русско-специфичное, всегда думай о следующем уровне:                                    
+                                                                
+  1. Temporary Russian-only heuristic (explicitly labeled `# LANG-FALLBACK`)                                            
+  2. Multilingual keyword set (RU + EN minimum)                 
+  3. Canonical classifier / constrained LLM mapping                                                                     
+  4. Fully i18n-safe version (central labels layer + language-aware prompts)                                            
+  
+  Шаг может оставить уровень 1 или 2, но только если код изолирован и отчёт явно говорит, что остаётся сделать.         
+                                                                
+  ## Filter question for every change                                                                                   
+                                                                
+  Перед любым изменением дополнительно к главному фильтру спроси:                                                       
+                                                                
+  **"Не делает ли это будущее переключение основного языка на английский сложнее?"**                                    
+                                                                
+  Если да — переделай, либо явно обоснуй в отчёте почему это необходимо и как это будет обобщено позже.                 
+                                                                
+  Цель — не "full i18n прямо сейчас". Цель — **ни один новый шаг не должен усложнять будущий переход**. 

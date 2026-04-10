@@ -859,6 +859,600 @@ def select_candidate_documents(
     return selected, rejected
 
 
+# ── Document → world model fact promotion ───────────────────────
+
+# Adoption intent classification states
+ADOPTION_ADOPTED = "adopted"  # strong confirm: promote as active current state
+ADOPTION_HYPOTHETICAL = "hypothetical"  # exploring: promote as pending (user should confirm)
+ADOPTION_NEGATED = "negated"  # rejected/declined: do not promote
+ADOPTION_AMBIGUOUS = "ambiguous"  # unclear: promote as pending
+
+# Legacy keyword signals (used as fast-path fallback when LLM unavailable)
+_ADOPTION_SIGNALS = [
+    "принял оффер", "принял предложение", "принял контракт", "подписал",
+    "согласился", "мой новый", "моя новая", "перешёл в", "перехожу в",
+    "принимаю оффер", "accepted offer", "signed", "accepted",
+    "мой работодатель", "моя зарплата", "мой контракт",
+    "мой врач", "мои анализы", "мой диагноз",
+    "я работаю в", "я работаю на", "я сейчас работаю",
+]
+
+_NEGATION_SIGNALS = [
+    "не принял", "отказался", "не подписал", "отклонил", "отказ",
+    "declined", "rejected", "not going to", "не планирую",
+]
+
+_HYPOTHETICAL_SIGNALS = [
+    "стоит ли", "should i", "надо ли", "думаю", "рассматриваю",
+    "если я", "если бы", "гипотетически", "what if",
+    "хочу решить", "раздумываю", "выбираю между",
+]
+
+# Heuristic: fact type → persistent fact key
+_EVIDENCE_TYPE_TO_KEY_PREFIX = {
+    "financial_fact": "financial",
+    "constraint": "constraint",
+    "timeline": "timeline",
+    "commitment": "commitment",
+    "condition": "condition",
+    "risk_factor": "risk",
+    "personal_parameter": "personal",
+}
+
+# Fact keys with "latest wins" supersede rule
+_SINGLETON_FACT_KEYWORDS = [
+    "salary", "зарплат", "оклад", "compensation",  # one current salary
+    "employer", "работодател", "company", "компания",  # one current employer
+    "probation", "испытательн",  # one current probation
+    "notice", "уведомлен",  # one current notice period
+]
+
+
+def _detect_adoption_signal(question: str, variants: list[str] | None = None) -> bool:
+    """Legacy keyword-based check (kept for backward compat)."""
+    text = _normalize(question + " " + " ".join(variants or []))
+    return any(sig in text for sig in _ADOPTION_SIGNALS)
+
+
+def _classify_adoption_keyword(question: str, variants: list[str] | None = None) -> str:
+    """Fast keyword-based classifier as fallback when LLM unavailable.
+
+    Returns one of: ADOPTION_ADOPTED, ADOPTION_HYPOTHETICAL, ADOPTION_NEGATED, ADOPTION_AMBIGUOUS.
+    """
+    text = _normalize(question + " " + " ".join(variants or []))
+
+    if any(s in text for s in _NEGATION_SIGNALS):
+        return ADOPTION_NEGATED
+    if any(s in text for s in _ADOPTION_SIGNALS):
+        # But hypothetical markers still override
+        if any(s in text for s in _HYPOTHETICAL_SIGNALS):
+            return ADOPTION_AMBIGUOUS
+        return ADOPTION_ADOPTED
+    if any(s in text for s in _HYPOTHETICAL_SIGNALS):
+        return ADOPTION_HYPOTHETICAL
+    return ADOPTION_AMBIGUOUS
+
+
+_ADOPTION_CLASSIFY_PROMPT = """Ты — классификатор намерений пользователя.
+
+Пользователь задал вопрос: "{question}"
+
+Определи, описывает ли пользователь свою ТЕКУЩУЮ реальность (уже принятое решение / актуальное состояние жизни) или задаёт ГИПОТЕТИЧЕСКИЙ вопрос (рассматривает варианты, не принял решения).
+
+Верни ТОЛЬКО одно слово из списка:
+- adopted — пользователь явно сообщает о принятом решении / текущем состоянии жизни ("я принял оффер", "мой работодатель", "подписал контракт", "у меня сейчас")
+- hypothetical — пользователь рассматривает варианты, задаёт гипотетический вопрос ("стоит ли принять", "если я уволюсь", "думаю о переходе")
+- negated — пользователь сообщает об отказе / отклонении ("не принял", "отказался", "решил не идти")
+- ambiguous — невозможно однозначно определить
+
+Ответ (одно слово):"""
+
+
+# ── Canonical fact key taxonomy ──────────────────────────────────
+# Fixed enum of canonical keys. Same semantic fact → same key, regardless of wording.
+# New keys should be added deliberately, not dynamically.
+
+CANONICAL_FACT_KEYS: set[str] = {
+    # Employment
+    "employment.employer",
+    "employment.role",
+    "employment.start_date",
+    # Financial
+    "financial.base_salary",
+    "financial.bonus",
+    "financial.sign_on_bonus",
+    "financial.equity",
+    "financial.currency",
+    # Constraints (contract terms)
+    "constraint.probation_period",
+    "constraint.notice_period",
+    "constraint.non_compete",
+    "constraint.relocation_deadline",
+    # Benefits
+    "benefit.vacation",
+    "benefit.pension",
+    # Medical
+    "medical.blood_result",
+    "medical.diagnosis",
+    "medical.restriction",
+    "medical.recommendation",
+    # Financial state (non-employment)
+    "financial_state.debt",
+    "financial_state.savings",
+    "financial_state.budget",
+    # Immigration
+    "immigration.visa_status",
+    "immigration.residence_permit",
+    # Fallback
+    "other.fact",
+}
+
+
+def _derive_fact_key_keyword(hard_fact: dict) -> str:
+    """Fast keyword-based mapping to canonical key. Returns 'other.fact' if no match."""
+    snippet = _normalize(hard_fact.get("exact_value", "") or hard_fact.get("evidence_snippet", ""))
+
+    # Employment
+    if any(k in snippet for k in ("employer", "работодател", "company name", "компания")):
+        return "employment.employer"
+    if any(k in snippet for k in ("role", "position", "должност", "title")):
+        return "employment.role"
+    if any(k in snippet for k in ("start date", "дата начала", "start of employment")):
+        return "employment.start_date"
+
+    # Financial — salary (most common case, broad keywords)
+    if any(k in snippet for k in (
+        "base salary", "annual salary", "gross salary", "gross per year", "net per year",
+        "зарплат", "оклад", "базовая зарплат", "базовый оклад", "фиксированная компенсац",
+        "annual gross", "annual compensation",
+    )):
+        return "financial.base_salary"
+    # Salary fallback — just "salary" if financial_fact type
+    if hard_fact.get("evidence_type") == "financial_fact" and any(k in snippet for k in ("salary", "gross", "net per")):
+        return "financial.base_salary"
+
+    if any(k in snippet for k in ("sign-on", "sign on bonus", "signing bonus", "подъёмн", "welcome bonus")):
+        return "financial.sign_on_bonus"
+    if any(k in snippet for k in ("bonus", "бонус", "премия", "annual bonus", "performance bonus")):
+        return "financial.bonus"
+    if any(k in snippet for k in ("vest", "cliff", "equity", "option", "опцион", "stock option", "rsu")):
+        return "financial.equity"
+
+    # Constraints
+    if any(k in snippet for k in ("probation", "испытательн", "trial period")):
+        return "constraint.probation_period"
+    if any(k in snippet for k in ("notice period", "notice of", "уведомлен", "срок уведомлен")):
+        return "constraint.notice_period"
+    if any(k in snippet for k in ("non-compete", "non compete", "noncompete", "non-competition", "не конкурир")):
+        return "constraint.non_compete"
+    if any(k in snippet for k in ("relocation deadline", "срок переезда", "move by")):
+        return "constraint.relocation_deadline"
+
+    # Benefits
+    if any(k in snippet for k in ("vacation day", "отпуск", "annual leave", "paid leave")):
+        return "benefit.vacation"
+    if any(k in snippet for k in ("pension", "retirement", "401k", "пенсион")):
+        return "benefit.pension"
+
+    # Medical
+    if any(k in snippet for k in ("hemoglobin", "гемоглобин", "blood test", "blood count", "общий анализ крови")):
+        return "medical.blood_result"
+    if any(k in snippet for k in ("diagnosis", "диагноз", "diagnosed with")):
+        return "medical.diagnosis"
+    if any(k in snippet for k in ("restrict", "ограничен", "avoid", "не рекомендуется", "нельзя")):
+        return "medical.restriction"
+    if any(k in snippet for k in ("recommend", "рекоменд", "should", "следует")):
+        return "medical.recommendation"
+
+    # Financial state
+    if any(k in snippet for k in ("debt", "долг", "кредит", "loan")):
+        return "financial_state.debt"
+    if any(k in snippet for k in ("savings", "накоплен", "подушк", "emergency fund")):
+        return "financial_state.savings"
+
+    # Immigration
+    if any(k in snippet for k in ("visa", "виза")):
+        return "immigration.visa_status"
+    if any(k in snippet for k in ("residence permit", "вид на жительств", "residency")):
+        return "immigration.residence_permit"
+
+    return "other.fact"
+
+
+_CANONICAL_KEY_LLM_PROMPT = """Ты классифицируешь факт из документа в одну из canonical категорий.
+
+Факт: "{snippet}"
+Тип evidence: {ev_type}
+
+Выбери ТОЛЬКО одну категорию из списка (верни ТОЛЬКО ключ, без кавычек):
+
+employment.employer — имя работодателя/компании
+employment.role — должность/роль
+employment.start_date — дата начала работы
+financial.base_salary — базовая зарплата / оклад / annual gross / base compensation
+financial.bonus — годовой/performance бонус
+financial.sign_on_bonus — sign-on / подъёмный бонус
+financial.equity — опционы / RSU / equity
+financial.currency — валюта выплат
+constraint.probation_period — испытательный срок
+constraint.notice_period — срок уведомления об увольнении
+constraint.non_compete — non-compete ограничения
+constraint.relocation_deadline — дедлайн переезда
+benefit.vacation — отпускные дни
+benefit.pension — пенсионные взносы
+medical.blood_result — результаты анализа крови
+medical.diagnosis — диагноз
+medical.restriction — медицинские ограничения
+medical.recommendation — медицинские рекомендации
+financial_state.debt — долги / кредиты
+financial_state.savings — накопления / подушка
+immigration.visa_status — визовый статус
+immigration.residence_permit — ВНЖ / residency
+other.fact — не подходит ни одна из категорий
+
+Ответ (одна строка):"""
+
+
+def _derive_fact_key(hard_fact: dict) -> str:
+    """Synchronous keyword-based derivation (canonical key or 'other.fact').
+
+    For reliable canonical mapping use `normalize_fact_key_with_llm()` which
+    falls back to LLM when keyword path returns 'other.fact'.
+    """
+    return _derive_fact_key_keyword(hard_fact)
+
+
+def promote_hard_facts_to_world_model(
+    hard_facts: list[dict],
+    existing_promoted: list[dict],
+    adoption_state: str,
+    source_document_id_by_name: dict[str, str] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Promote hard facts to the personal world model with explicit state.
+
+    State mapping (v2):
+    - ADOPTION_ADOPTED → promoted as "active" (full persistence, supersedes old)
+    - ADOPTION_HYPOTHETICAL → promoted as "pending_confirmation" (visible but not authoritative, no supersede)
+    - ADOPTION_AMBIGUOUS → promoted as "pending_confirmation"
+    - ADOPTION_NEGATED → NOT promoted
+
+    Returns (updated_promoted_list, newly_promoted).
+    """
+    if not hard_facts or adoption_state == ADOPTION_NEGATED:
+        return existing_promoted, []
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    source_map = source_document_id_by_name or {}
+
+    # Map adoption state → initial fact state
+    if adoption_state == ADOPTION_ADOPTED:
+        initial_state = "active"
+    else:
+        initial_state = "pending_confirmation"
+
+    updated = [dict(f) for f in existing_promoted]
+    newly: list[dict] = []
+
+    for hf in hard_facts:
+        # Prefer pre-annotated canonical key (from _derive_canonical_keys_for_facts)
+        key = hf.get("_fact_key") or _derive_fact_key(hf)
+        value = hf.get("exact_value", "") or hf.get("evidence_snippet", "")
+        if not value:
+            continue
+
+        doc_name = hf.get("document_name", "")
+        doc_id = source_map.get(doc_name, "") or hf.get("document_id", "")
+
+        # Check for existing fact with same key (any state)
+        existing_same_key = [f for f in updated if f.get("fact_key") == key]
+
+        skip = False
+        for ex in existing_same_key:
+            if ex.get("source_document_id") == doc_id and ex.get("fact_value") == value:
+                # Same source + same value → skip (already known)
+                skip = True
+                break
+            # Only supersede if new promotion is active (authoritative)
+            if initial_state == "active" and ex.get("state") == "active":
+                ex["state"] = "superseded"
+                ex["superseded_at"] = now
+                ex["superseded_reason"] = f"replaced by newer fact from {doc_name or 'document'}"
+
+        if skip:
+            continue
+
+        new_fact = {
+            "fact_key": key,
+            "fact_value": value,
+            "fact_type": hf.get("evidence_type", "other"),
+            "source_document_id": doc_id,
+            "source_document_name": doc_name,
+            "source_evidence_exact_value": hf.get("exact_value", ""),
+            "source_sphere_name": hf.get("sphere_name", ""),
+            "promoted_at": now,
+            "state": initial_state,
+            "adoption_state": adoption_state,
+            "superseded_at": "",
+            "superseded_reason": "",
+        }
+        updated.append(new_fact)
+        newly.append(new_fact)
+
+    return updated, newly
+
+
+def invalidate_facts_by_document(
+    promoted: list[dict],
+    source_document_id: str,
+    reason: str = "document marked as no longer current",
+) -> tuple[list[dict], int]:
+    """Bulk deactivate all promoted facts that originated from a given source document.
+
+    Transitions facts in states (active, pending_confirmation, user_confirmed) → invalidated_by_document.
+    Preserves source trace and original promoted_at, adds invalidated_at + invalidated_reason.
+    Does NOT touch facts already in superseded / user_dismissed / deactivated / invalidated_by_document state.
+
+    Returns (updated_list, count_of_affected_facts).
+    """
+    if not source_document_id:
+        return promoted, 0
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    affected_states = {"active", "pending_confirmation", "user_confirmed"}
+    count = 0
+    updated = [dict(f) for f in promoted]
+
+    for f in updated:
+        if f.get("source_document_id") != source_document_id:
+            continue
+        if f.get("state") not in affected_states:
+            continue
+        f["state"] = "invalidated_by_document"
+        f["invalidated_at"] = now
+        f["invalidated_reason"] = reason
+        count += 1
+
+    return updated, count
+
+
+def format_promoted_facts_for_context(promoted: list[dict]) -> str:
+    """Format promoted facts for personal_context, respecting state.
+
+    Only includes facts with state in ('active', 'user_confirmed').
+    Excludes pending_confirmation, user_dismissed, deactivated, superseded, stale.
+    """
+    usable = [f for f in promoted if f.get("state") in ("active", "user_confirmed")]
+    if not usable:
+        return ""
+
+    lines = ["\n## Подтверждённые факты из загруженных документов (persistent world model)"]
+    for f in usable:
+        src = f.get("source_document_name", "?")
+        confirmed_marker = " [user-confirmed]" if f.get("state") == "user_confirmed" else ""
+        lines.append(
+            f"  ★ [{f.get('fact_key', 'fact')}] {f.get('fact_value', '')} "
+            f"(источник: {src}{confirmed_marker})"
+        )
+    return "\n".join(lines)
+
+
+# ── Post-hoc hard fact validation ────────────────────────────────
+
+_NUMBER_RE = re.compile(r"[\d][\\d.,\s]*[\d]|[\d]+")
+_CURRENCY_RE = re.compile(r"(EUR|USD|RUB|руб|€|\$|eur|usd)", re.IGNORECASE)
+_PERIOD_RE = re.compile(r"(\d+)\s*(?:month|месяц|мес|year|год|лет|week|недел)", re.IGNORECASE)
+
+
+def _extract_numbers(text: str) -> set[str]:
+    """Extract all number-like tokens from text, normalized."""
+    nums = set()
+    for m in _NUMBER_RE.finditer(text):
+        n = m.group().replace(" ", "").replace(",", "").replace(".", "")
+        if len(n) >= 2:  # skip single digits
+            nums.add(n)
+    return nums
+
+
+def _extract_currency(text: str) -> str | None:
+    """Extract primary currency mention."""
+    m = _CURRENCY_RE.search(text)
+    if m:
+        raw = m.group().upper()
+        if raw in ("€", "EUR"):
+            return "EUR"
+        if raw in ("$", "USD"):
+            return "USD"
+        if raw in ("РУБ", "RUB", "руб"):
+            return "RUB"
+    return None
+
+
+def _extract_periods(text: str) -> list[tuple[str, str]]:
+    """Extract (number, unit) period mentions."""
+    results = []
+    for m in _PERIOD_RE.finditer(text):
+        num = m.group(1)
+        unit_raw = m.group().lower()
+        if any(u in unit_raw for u in ("month", "месяц", "мес")):
+            results.append((num, "months"))
+        elif any(u in unit_raw for u in ("year", "год", "лет")):
+            results.append((num, "years"))
+        elif any(u in unit_raw for u in ("week", "недел")):
+            results.append((num, "weeks"))
+    return results
+
+
+class HardFactViolation:
+    """A single violation found by post-hoc validation."""
+    __slots__ = ("fact_type", "expected", "found_in_output", "field", "severity", "description")
+
+    def __init__(self, fact_type: str, expected: str, found_in_output: str, field: str,
+                 severity: str = "high", description: str = ""):
+        self.fact_type = fact_type
+        self.expected = expected
+        self.found_in_output = found_in_output
+        self.field = field
+        self.severity = severity
+        self.description = description
+
+    def to_dict(self) -> dict:
+        return {
+            "fact_type": self.fact_type,
+            "expected": self.expected,
+            "found_in_output": self.found_in_output,
+            "field": self.field,
+            "severity": self.severity,
+            "description": self.description,
+        }
+
+
+def validate_hard_facts_in_output(
+    hard_facts: list[dict],
+    result: dict,
+) -> list[HardFactViolation]:
+    """Post-hoc validation: check synthesis output against confirmed hard facts.
+
+    Detects:
+    - Currency conversion (EUR in evidence, RUB in output)
+    - Number substitution (different salary/bonus numbers)
+    - Period changes (different durations)
+    - Unsupported derived values (monthly net from annual gross)
+    """
+    if not hard_facts:
+        return []
+
+    violations: list[HardFactViolation] = []
+
+    # Collect all hard fact signals
+    fact_currencies: set[str] = set()
+    fact_numbers: set[str] = set()
+    fact_periods: list[tuple[str, str]] = []
+    fact_texts: list[str] = []
+
+    for hf in hard_facts:
+        val = hf.get("exact_value", "") or hf.get("evidence_snippet", "")
+        fact_texts.append(val)
+        c = _extract_currency(val)
+        if c:
+            fact_currencies.add(c)
+        fact_numbers.update(_extract_numbers(val))
+        fact_periods.extend(_extract_periods(val))
+
+    # Collect output text from key fields
+    output_fields: dict[str, str] = {}
+    for report in result.get("reports", []):
+        label = report.get("variant_label", "?")
+        for field in ("most_likely_outcome", "alternative_outcome", "decision_signal",
+                      "primary_bottleneck", "dominant_downside"):
+            text = report.get(field, "")
+            if text:
+                output_fields[f"{label}/{field}"] = text
+
+    comparison = result.get("comparison", {}) or {}
+    if comparison.get("summary"):
+        output_fields["comparison/summary"] = comparison["summary"]
+
+    ext = result.get("external_insights", "")
+    if ext:
+        output_fields["external_insights"] = ext
+
+    # Check each output field
+    for field_name, output_text in output_fields.items():
+        output_lower = output_text.lower()
+        output_currency = _extract_currency(output_text)
+        output_numbers = _extract_numbers(output_text)
+        output_periods = _extract_periods(output_text)
+
+        # 1. Currency mismatch: evidence has EUR but output mentions RUB (or vice versa)
+        if fact_currencies and output_currency:
+            if output_currency not in fact_currencies:
+                violations.append(HardFactViolation(
+                    fact_type="currency_conversion",
+                    expected=", ".join(fact_currencies),
+                    found_in_output=output_currency,
+                    field=field_name,
+                    severity="high",
+                    description=f"Документ содержит {', '.join(fact_currencies)}, но в ответе {output_currency}",
+                ))
+
+        # 2. Suspicious numbers not in evidence
+        if output_numbers and fact_numbers:
+            for n in output_numbers:
+                # Check if this number appears in any fact or is derived from facts
+                if n not in fact_numbers and len(n) >= 4:
+                    # Large number not in evidence — suspicious
+                    # But allow if it's clearly a date (2026, 2025, etc.)
+                    if n.startswith("202") and len(n) == 4:
+                        continue
+                    violations.append(HardFactViolation(
+                        fact_type="unsupported_number",
+                        expected="numbers from evidence: " + ", ".join(sorted(fact_numbers)[:5]),
+                        found_in_output=n,
+                        field=field_name,
+                        severity="medium",
+                        description=f"Число {n} не найдено в подтверждённых фактах документа",
+                    ))
+
+        # 3. Monthly net from annual gross (common hallucination)
+        if any("gross" in ft.lower() or "annual" in ft.lower() for ft in fact_texts):
+            if "net" in output_lower and ("месяц" in output_lower or "month" in output_lower):
+                if not any("net" in ft.lower() for ft in fact_texts):
+                    violations.append(HardFactViolation(
+                        fact_type="unsupported_derivation",
+                        expected="only annual gross in document",
+                        found_in_output="monthly net mentioned",
+                        field=field_name,
+                        severity="high",
+                        description="Документ содержит только annual gross, monthly net не подтверждён",
+                    ))
+
+    return violations
+
+
+def apply_hard_fact_guard(
+    result: dict,
+    violations: list[HardFactViolation],
+    hard_facts: list[dict],
+) -> dict:
+    """Apply guard behavior: append correction footnotes to violating fields.
+
+    Returns the modified result dict.
+    """
+    if not violations:
+        return result
+
+    # Build correction footnote from hard facts
+    confirmed_summary = "; ".join(
+        hf.get("exact_value", "") or hf.get("evidence_snippet", "")
+        for hf in hard_facts[:6]
+    )
+    footnote = f"\n\n⚠️ Примечание: подтверждённые значения из документа: {confirmed_summary}. Используйте только подтверждённые данные для принятия решений."
+
+    # Find which report fields have high-severity violations
+    high_violation_fields: set[str] = set()
+    for v in violations:
+        if v.severity == "high":
+            high_violation_fields.add(v.field)
+
+    # Append footnote to violating report fields
+    for report in result.get("reports", []):
+        label = report.get("variant_label", "?")
+        for field in ("most_likely_outcome", "decision_signal"):
+            key = f"{label}/{field}"
+            if key in high_violation_fields and report.get(field):
+                report[field] = report[field] + footnote
+
+    # Append to comparison summary if violated
+    comp = result.get("comparison")
+    if comp and "comparison/summary" in high_violation_fields and comp.get("summary"):
+        comp["summary"] = comp["summary"] + footnote
+
+    return result
+
+
 def validate_workspace_grounding(
     result: dict,
     evidence: list[EvidenceUnit],
@@ -1382,6 +1976,88 @@ class PredictionQueryAgent:
         """Decision-specific mode classification for OSINT routing."""
         return await classify_question_mode_llm(question, self.ai, AI_MODEL)
 
+    async def _normalize_fact_key_llm(self, hard_fact: dict) -> str:
+        """LLM fallback for canonical key classification.
+
+        Only called when keyword derivation returns 'other.fact'.
+        Returns a canonical key or 'other.fact'.
+        """
+        snippet = hard_fact.get("exact_value", "") or hard_fact.get("evidence_snippet", "")
+        if not snippet:
+            return "other.fact"
+        ev_type = hard_fact.get("evidence_type", "other")
+        prompt = _CANONICAL_KEY_LLM_PROMPT.replace("{snippet}", snippet[:200]).replace("{ev_type}", ev_type)
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=15,
+                temperature=0,
+            )
+            raw = (resp.choices[0].message.content or "").strip().strip('"').strip("'").strip()
+            # Take first line/word
+            raw = raw.split()[0] if raw else ""
+            if raw in CANONICAL_FACT_KEYS:
+                return raw
+        except Exception as e:
+            logger.warning("LLM canonical key classifier failed: %s", e)
+        return "other.fact"
+
+    async def _derive_canonical_keys_for_facts(self, hard_facts: list[dict]) -> list[dict]:
+        """Annotate each hard fact with a canonical _fact_key field.
+
+        Uses fast keyword path first; LLM fallback only when keyword returns 'other.fact'.
+        Runs LLM calls in parallel for efficiency.
+        """
+        annotated = [dict(hf) for hf in hard_facts]
+
+        # First pass: keyword derivation
+        needs_llm: list[int] = []
+        for i, hf in enumerate(annotated):
+            key = _derive_fact_key_keyword(hf)
+            hf["_fact_key"] = key
+            if key == "other.fact":
+                needs_llm.append(i)
+
+        # Second pass: LLM in parallel for ambiguous ones
+        if needs_llm:
+            tasks = [self._normalize_fact_key_llm(annotated[i]) for i in needs_llm]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, res in zip(needs_llm, results):
+                if isinstance(res, str):
+                    annotated[i]["_fact_key"] = res
+                # else: keep 'other.fact'
+
+        return annotated
+
+    async def _classify_adoption_intent(self, question: str, variants: list[str] | None = None) -> str:
+        """Classify adoption intent using LLM with keyword fallback.
+
+        Returns one of: ADOPTION_ADOPTED, ADOPTION_HYPOTHETICAL, ADOPTION_NEGATED, ADOPTION_AMBIGUOUS.
+        """
+        # Fast keyword path for clear negation (saves LLM call)
+        if any(sig in _normalize(question) for sig in _NEGATION_SIGNALS):
+            return ADOPTION_NEGATED
+
+        prompt = _ADOPTION_CLASSIFY_PROMPT.replace("{question}", question)
+        try:
+            resp = await self.ai.chat.completions.create(
+                model=AI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0,
+            )
+            raw = (resp.choices[0].message.content or "").strip().lower().strip('"').strip("'")
+            # Strip any punctuation
+            raw = re.sub(r"[^a-z]", "", raw)
+            if raw in ("adopted", "hypothetical", "negated", "ambiguous"):
+                return raw
+        except Exception as e:
+            logger.warning("LLM adoption classifier failed: %s; using keyword fallback", e)
+
+        # Fallback to keyword classifier
+        return _classify_adoption_keyword(question, variants)
+
     # ── Step 2: Personal context retrieval ────────────────────────────
 
     async def _gather_context(
@@ -1554,10 +2230,24 @@ class PredictionQueryAgent:
         if zep_context:
             parts.append(zep_context)
 
-        # Document context from uploaded files (with candidate selection)
+        # Promoted document-backed facts (persistent world model)
+        try:
+            pf_q, pf_p = graph_queries.get_promoted_facts(user_id)
+            pf_rows = await self.graph.execute_query(pf_q, pf_p)
+            if pf_rows and pf_rows[0].get("promoted_facts"):
+                import json as _json
+                promoted_list = _json.loads(pf_rows[0]["promoted_facts"])
+                pf_block = format_promoted_facts_for_context(promoted_list)
+                if pf_block:
+                    parts.append(pf_block)
+        except Exception:
+            logger.warning("Failed to load promoted facts", exc_info=True)
+
+        # Document context from uploaded files (with candidate selection + rescue routing)
         doc_context, doc_names, doc_snippets, doc_candidates = await self._gather_document_context(
             user_id, context_spheres, question, variants or [],
             question_mode=question_mode,
+            all_spheres=all_spheres,
         )
         if doc_context:
             parts.append(doc_context)
@@ -1653,6 +2343,12 @@ class PredictionQueryAgent:
             return ""
         return "\nДолгосрочная память по сферам:\n" + "\n".join(facts)
 
+    # High-value document types that warrant rescue routing
+    _RESCUE_DOC_TYPES = {"offer", "contract", "financial_statement", "medical", "immigration_doc", "budget"}
+    _RESCUE_THRESHOLD = 0.20  # min score for rescue candidate
+    _RESCUE_MAX = 2  # max rescue docs to add
+    _PRIMARY_STRONG_THRESHOLD = 0.30  # if any primary candidate is this strong, skip rescue
+
     async def _gather_document_context(
         self,
         user_id: str,
@@ -1660,19 +2356,21 @@ class PredictionQueryAgent:
         question: str,
         variants: list[str],
         question_mode: str = "",
+        all_spheres: list[dict] | None = None,
     ) -> tuple[str, list[str], list[dict], list[dict]]:
-        """Pull extracted text from sphere documents using candidate selection + chunk retrieval.
+        """Pull extracted text from sphere documents using candidate selection + chunk retrieval + rescue routing.
 
         Returns (context_str, doc_filenames, doc_snippets_for_evidence, all_candidates).
         """
-        if not self.docs or not context_spheres:
+        if not self.docs:
             return "", [], [], []
 
-        # Phase 1: Score all available documents as candidates
+        # Phase 1: Score documents from context_spheres as candidates
         all_candidates: list[dict] = []
         doc_data_map: dict[str, tuple[dict, str]] = {}  # doc_id → (doc, sphere_name)
+        seen_doc_ids: set[str] = set()
 
-        for s in context_spheres:
+        for s in (context_spheres or []):
             try:
                 docs = await self.docs.get_documents(user_id, s["id"])
                 if not docs:
@@ -1687,25 +2385,70 @@ class PredictionQueryAgent:
                     candidate = score_document_candidate(
                         doc, s["name"], question, variants, question_mode,
                     )
+                    candidate["selected_by"] = "primary_routing"
                     all_candidates.append(candidate)
                     doc_data_map[candidate["document_id"]] = (doc, s["name"])
+                    seen_doc_ids.add(candidate["document_id"])
             except Exception:
                 logger.warning("Failed to fetch docs for sphere %s", s["id"], exc_info=True)
                 continue
 
-        if not all_candidates:
-            return "", [], [], []
-
-        # Phase 2: Select top candidates
+        # Phase 2: Select top candidates from primary routing
         selected, rejected = select_candidate_documents(all_candidates)
 
+        # Phase 2b: Rescue routing — check non-context spheres for high-value docs
+        primary_strong = any(c["candidate_score"] >= self._PRIMARY_STRONG_THRESHOLD for c in selected)
+        need_rescue = not selected or not primary_strong
+
+        if need_rescue and all_spheres:
+            context_sphere_ids = {s["id"] for s in (context_spheres or [])}
+            rescue_spheres = [s for s in all_spheres if s["id"] not in context_sphere_ids]
+
+            rescue_candidates: list[dict] = []
+            for s in rescue_spheres:
+                try:
+                    docs = await self.docs.get_documents(user_id, s["id"])
+                    if not docs:
+                        continue
+                    for doc in docs:
+                        doc_id = doc.get("id", "")
+                        if doc_id in seen_doc_ids:
+                            continue
+                        if doc.get("status") not in ("processed", "limited"):
+                            continue
+                        text = doc.get("extracted_text", "")
+                        if len(text) < 20:
+                            continue
+
+                        candidate = score_document_candidate(
+                            doc, s["name"], question, variants, question_mode,
+                        )
+
+                        # Only rescue high-value document types
+                        if (candidate["document_type_hint"] in self._RESCUE_DOC_TYPES
+                                and candidate["candidate_score"] >= self._RESCUE_THRESHOLD):
+                            candidate["selected_by"] = "rescue_routing"
+                            candidate["candidate_reasons"].append("rescue: high-value doc type outside primary spheres")
+                            rescue_candidates.append(candidate)
+                            doc_data_map[doc_id] = (doc, s["name"])
+                            seen_doc_ids.add(doc_id)
+                except Exception:
+                    continue
+
+            if rescue_candidates:
+                rescue_candidates.sort(key=lambda c: c["candidate_score"], reverse=True)
+                for rc in rescue_candidates[:self._RESCUE_MAX]:
+                    rc["selected_for_evidence"] = True
+                    selected.append(rc)
+                    all_candidates.append(rc)
+                logger.info("Rescue routing: added %d docs from non-context spheres",
+                            min(len(rescue_candidates), self._RESCUE_MAX))
+
         if not selected:
-            logger.info("Document routing: no candidates above threshold (best=%.3f)",
-                        all_candidates[0]["candidate_score"] if all_candidates else 0)
             return "", [], [], all_candidates
 
-        logger.info("Document routing: %d selected, %d rejected (of %d total)",
-                    len(selected), len(rejected), len(all_candidates))
+        logger.info("Document routing: %d selected (primary + rescue), %d rejected",
+                    len(selected), len(rejected))
 
         # Phase 3: Chunk retrieval only for selected candidates
         doc_parts: list[str] = []
@@ -2506,6 +3249,50 @@ Decision mode: {mode}
 
         doc_evidence = await doc_evidence_task
 
+        # Promote hard facts to persistent world model (with LLM adoption classifier)
+        promoted_now: list[dict] = []
+        promoted_all: list[dict] = []
+        adoption_state = ADOPTION_AMBIGUOUS
+        try:
+            hard_facts_for_promotion = [it for it in doc_evidence.get("items", []) if it.get("is_hard_fact")]
+            if hard_facts_for_promotion:
+                # LLM classifier with keyword fallback
+                adoption_state = await self._classify_adoption_intent(question, variants)
+                logger.info("Adoption intent: %s", adoption_state)
+
+                # Load existing promoted facts
+                pf_q, pf_p = graph_queries.get_promoted_facts(user_id)
+                pf_rows = await self.graph.execute_query(pf_q, pf_p)
+                existing_promoted = []
+                if pf_rows and pf_rows[0].get("promoted_facts"):
+                    import json as _json
+                    existing_promoted = _json.loads(pf_rows[0]["promoted_facts"])
+
+                # Build doc_name → doc_id map from snippets
+                name_to_id: dict[str, str] = {}
+                for ds in doc_snippets:
+                    name_to_id[ds.get("filename", "")] = ds.get("document_id", "") or ds.get("filename", "")
+
+                # Annotate with canonical keys (keyword fast-path + LLM fallback)
+                annotated_facts = await self._derive_canonical_keys_for_facts(hard_facts_for_promotion)
+
+                promoted_all, promoted_now = promote_hard_facts_to_world_model(
+                    annotated_facts, existing_promoted,
+                    adoption_state=adoption_state,
+                    source_document_id_by_name=name_to_id,
+                )
+                if promoted_now:
+                    import json as _json
+                    save_q, save_p = graph_queries.save_promoted_facts(user_id, _json.dumps(promoted_all, ensure_ascii=False))
+                    await self.graph.execute_query(save_q, save_p)
+                    logger.info("Promoted %d facts (state=%s)", len(promoted_now), adoption_state)
+                elif not existing_promoted:
+                    promoted_all = []
+                else:
+                    promoted_all = existing_promoted
+        except Exception:
+            logger.warning("Fact promotion failed", exc_info=True)
+
         # Personal investment suitability (investment mode only)
         result_extras: dict = {}
         if question_mode == QuestionMode.investment:
@@ -2620,11 +3407,21 @@ Decision mode: {mode}
             personal_context_raw=personal_context,
         )
 
+        # Post-hoc hard fact validation
+        hard_facts = [it for it in doc_evidence.get("items", []) if it.get("is_hard_fact")]
+        hf_violations = validate_hard_facts_in_output(hard_facts, result)
+        if hf_violations:
+            logger.warning("Hard fact violations: %d found", len(hf_violations))
+            result = apply_hard_fact_guard(result, hf_violations, hard_facts)
+
         result["question"] = question
         result["context_spheres_used"] = used_sphere_names
         result["documents_used"] = used_doc_names
         result["document_evidence"] = doc_evidence
         result["document_candidates"] = doc_candidates
+        result["hard_fact_violations"] = [v.to_dict() for v in hf_violations]
+        result["promoted_facts"] = promoted_all
+        result["newly_promoted_facts"] = promoted_now
         result["question_type"] = question_type
         result["question_mode"] = question_mode.value
         result["variants"] = variants

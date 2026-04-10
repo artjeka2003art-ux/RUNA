@@ -197,3 +197,143 @@ async def get_scenarios(user_id: str, request: Request):
         })
     except Exception as e:
         return APIResponse(success=False, error=str(e))
+
+
+# ── Promoted facts (persistent world model) control API ────────────
+
+import json as _json
+from pydantic import BaseModel
+from datetime import datetime, timezone
+
+
+class PromotedFactAction(BaseModel):
+    user_id: str
+    fact_key: str
+    source_document_id: str = ""
+
+
+class DocumentInvalidateAction(BaseModel):
+    user_id: str
+    source_document_id: str
+    reason: str = ""
+
+
+async def _load_facts(request: Request, user_id: str) -> list:
+    graph = request.app.state.neo4j
+    q, p = graph_queries.get_promoted_facts(user_id)
+    rows = await graph.execute_query(q, p)
+    if rows and rows[0].get("promoted_facts"):
+        return _json.loads(rows[0]["promoted_facts"])
+    return []
+
+
+async def _save_facts(request: Request, user_id: str, facts: list) -> None:
+    graph = request.app.state.neo4j
+    q, p = graph_queries.save_promoted_facts(user_id, _json.dumps(facts, ensure_ascii=False))
+    await graph.execute_query(q, p)
+
+
+@router.get("/{user_id}/promoted-facts", response_model=APIResponse)
+async def list_promoted_facts(user_id: str, request: Request):
+    """List all promoted facts for a user (any state)."""
+    try:
+        facts = await _load_facts(request, user_id)
+        return APIResponse(success=True, data={"promoted_facts": facts})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.post("/promoted-facts/confirm", response_model=APIResponse)
+async def confirm_promoted_fact(payload: PromotedFactAction, request: Request):
+    """Promote pending fact to user_confirmed (authoritative)."""
+    try:
+        facts = await _load_facts(request, payload.user_id)
+        now = datetime.now(timezone.utc).isoformat()
+        found = False
+        for f in facts:
+            if f.get("fact_key") == payload.fact_key and (
+                not payload.source_document_id or f.get("source_document_id") == payload.source_document_id
+            ):
+                if f.get("state") in ("pending_confirmation", "active"):
+                    # Also supersede any other active fact with same key
+                    for other in facts:
+                        if other is f:
+                            continue
+                        if other.get("fact_key") == payload.fact_key and other.get("state") in ("active", "user_confirmed"):
+                            other["state"] = "superseded"
+                            other["superseded_at"] = now
+                            other["superseded_reason"] = "replaced by user-confirmed fact"
+                    f["state"] = "user_confirmed"
+                    f["confirmed_at"] = now
+                    found = True
+        if not found:
+            return APIResponse(success=False, error="Fact not found")
+        await _save_facts(request, payload.user_id, facts)
+        return APIResponse(success=True, data={"promoted_facts": facts})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.post("/promoted-facts/dismiss", response_model=APIResponse)
+async def dismiss_promoted_fact(payload: PromotedFactAction, request: Request):
+    """Dismiss a pending/suggested fact (will not be used in reasoning)."""
+    try:
+        facts = await _load_facts(request, payload.user_id)
+        now = datetime.now(timezone.utc).isoformat()
+        found = False
+        for f in facts:
+            if f.get("fact_key") == payload.fact_key and (
+                not payload.source_document_id or f.get("source_document_id") == payload.source_document_id
+            ):
+                f["state"] = "user_dismissed"
+                f["dismissed_at"] = now
+                found = True
+        if not found:
+            return APIResponse(success=False, error="Fact not found")
+        await _save_facts(request, payload.user_id, facts)
+        return APIResponse(success=True, data={"promoted_facts": facts})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.post("/promoted-facts/invalidate-document", response_model=APIResponse)
+async def invalidate_document(payload: DocumentInvalidateAction, request: Request):
+    """Bulk-invalidate all promoted facts from a given source document.
+
+    Semantics: document is no longer treated as a source of active persistent truth.
+    All active / pending / user_confirmed facts with matching source_document_id
+    transition to state 'invalidated_by_document'. History is preserved (trace stays).
+    """
+    try:
+        from backend.agents.prediction_query_agent import invalidate_facts_by_document
+        facts = await _load_facts(request, payload.user_id)
+        reason = payload.reason or "document marked as no longer current"
+        updated, count = invalidate_facts_by_document(facts, payload.source_document_id, reason)
+        if count == 0:
+            return APIResponse(success=True, data={"promoted_facts": updated, "invalidated_count": 0})
+        await _save_facts(request, payload.user_id, updated)
+        return APIResponse(success=True, data={"promoted_facts": updated, "invalidated_count": count})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))
+
+
+@router.post("/promoted-facts/deactivate", response_model=APIResponse)
+async def deactivate_promoted_fact(payload: PromotedFactAction, request: Request):
+    """Mark an active fact as no longer current (e.g., user changed jobs)."""
+    try:
+        facts = await _load_facts(request, payload.user_id)
+        now = datetime.now(timezone.utc).isoformat()
+        found = False
+        for f in facts:
+            if f.get("fact_key") == payload.fact_key and (
+                not payload.source_document_id or f.get("source_document_id") == payload.source_document_id
+            ):
+                f["state"] = "deactivated"
+                f["deactivated_at"] = now
+                found = True
+        if not found:
+            return APIResponse(success=False, error="Fact not found")
+        await _save_facts(request, payload.user_id, facts)
+        return APIResponse(success=True, data={"promoted_facts": facts})
+    except Exception as e:
+        return APIResponse(success=False, error=str(e))

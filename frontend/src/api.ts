@@ -217,6 +217,60 @@ export interface DocumentEvidenceReport {
   summary: string;
 }
 
+export interface PromotedFact {
+  fact_key: string;
+  fact_value: string;
+  fact_type: string;
+  source_document_id: string;
+  source_document_name: string;
+  source_evidence_exact_value: string;
+  source_sphere_name: string;
+  promoted_at: string;
+  state: "active" | "pending_confirmation" | "user_confirmed" | "user_dismissed" | "deactivated" | "invalidated_by_document" | "superseded" | "stale";
+  adoption_state?: "adopted" | "hypothetical" | "negated" | "ambiguous";
+  superseded_at?: string;
+  superseded_reason?: string;
+  confirmed_at?: string;
+  dismissed_at?: string;
+  deactivated_at?: string;
+}
+
+export async function confirmPromotedFact(userId: string, factKey: string, sourceDocumentId: string = "") {
+  const res = await fetch(`${BASE}/dashboard/promoted-facts/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, fact_key: factKey, source_document_id: sourceDocumentId }),
+  });
+  return res.json();
+}
+
+export async function dismissPromotedFact(userId: string, factKey: string, sourceDocumentId: string = "") {
+  const res = await fetch(`${BASE}/dashboard/promoted-facts/dismiss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, fact_key: factKey, source_document_id: sourceDocumentId }),
+  });
+  return res.json();
+}
+
+export async function deactivatePromotedFact(userId: string, factKey: string, sourceDocumentId: string = "") {
+  const res = await fetch(`${BASE}/dashboard/promoted-facts/deactivate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, fact_key: factKey, source_document_id: sourceDocumentId }),
+  });
+  return res.json();
+}
+
+export async function invalidateDocumentFacts(userId: string, sourceDocumentId: string, reason: string = "") {
+  const res = await fetch(`${BASE}/dashboard/promoted-facts/invalidate-document`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, source_document_id: sourceDocumentId, reason }),
+  });
+  return res.json();
+}
+
 export interface DocumentCandidate {
   document_id: string;
   document_name: string;
@@ -225,6 +279,7 @@ export interface DocumentCandidate {
   candidate_reasons: string[];
   document_type_hint: string;
   selected_for_evidence: boolean;
+  selected_by?: "primary_routing" | "rescue_routing";
 }
 
 export interface WorkspaceResult {
@@ -242,6 +297,8 @@ export interface WorkspaceResult {
   documents_used?: string[];
   document_evidence?: DocumentEvidenceReport;
   document_candidates?: DocumentCandidate[];
+  promoted_facts?: PromotedFact[];
+  newly_promoted_facts?: PromotedFact[];
   _quality?: PredictionQuality;
   signal_quality?: string;
   signal_coverage?: string;
